@@ -1903,8 +1903,8 @@ DISK_USED=$(df -BG / 2>/dev/null | awk 'NR==2{gsub("G",""); print $3}' || echo 0
 DISK_PERCENT=$(df / 2>/dev/null | awk 'NR==2{gsub("%",""); print $5}' || echo 0)
 
 # Last login
-LAST_LOGIN=$(last -1 -R 2>/dev/null | head -1 | awk '{if(NF>=5) print $4" "$5" "$6" from "$3; else print "N/A"}')
-[[ -z "$LAST_LOGIN" || "$LAST_LOGIN" == *"wtmp"* ]] && LAST_LOGIN="First login"
+LAST_LOGIN=$(last -1 2>/dev/null | head -1 | awk '{if(NF>=7) print $5" "$6" "$7" from "$3; else print "N/A"}')
+[[ -z "$LAST_LOGIN" || "$LAST_LOGIN" == *"wtmp"* || "$LAST_LOGIN" == *"boot"* ]] && LAST_LOGIN="First login"
 
 # Updates (RHEL uses dnf)
 UPDATES="0"
@@ -2009,9 +2009,11 @@ printf '─%.0s' $(seq 1 $((WIDTH-2)))
 printf "╣${NC}\n"
 
 # Footer: Last login | Updates
-updates_text=""
-[[ "$UPDATES" -gt 0 ]] && updates_text="${Y}${UPDATES} updates available${NC}"
-printf "${C}║${NC}  ${D}Last login:${NC} %-43s %s%*s${C}║${NC}\n" "$LAST_LOGIN" "$updates_text" $((23 - ${#UPDATES})) ""
+if [[ "$UPDATES" -gt 0 ]]; then
+    printf "${C}║${NC}  ${D}Last login:${NC} %-43s ${Y}%s updates available${NC}%*s${C}║${NC}\n" "$LAST_LOGIN" "$UPDATES" $((5 - ${#UPDATES})) ""
+else
+    printf "${C}║${NC}  ${D}Last login:${NC} %-43s %24s${C}║${NC}\n" "$LAST_LOGIN" ""
+fi
 
 # Bottom border
 printf "${C}╚"
