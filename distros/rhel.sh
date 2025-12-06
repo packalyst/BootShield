@@ -1816,6 +1816,11 @@ module_cleanup() {
     printf "${DIM}Install a clean, informative MOTD showing system stats${NC}\n\n"
 
     if confirm "Install custom MOTD?"; then
+        # Install figlet if not present (for ASCII banner)
+        if ! command -v figlet &>/dev/null; then
+            dnf install -y figlet >/dev/null 2>&1 || yum install -y figlet >/dev/null 2>&1 || true
+        fi
+
         # Create profile.d script for MOTD (RHEL way)
         cat > /etc/profile.d/motd.sh << 'MOTDEOF'
 #!/bin/bash
@@ -1830,25 +1835,42 @@ Y='\033[1;33m'    # Yellow
 R='\033[0;31m'    # Red
 W='\033[1;37m'    # White
 D='\033[0;90m'    # Dim
+B='\033[1m'       # Bold
 NC='\033[0m'      # No Color
+
+# Box width
+WIDTH=90
+
+# Progress bar function
+progress_bar() {
+    local pct=$1
+    local width=20
+    local filled=$((pct * width / 100))
+    local empty=$((width - filled))
+    local color="$G"
+    [[ $pct -ge 70 ]] && color="$Y"
+    [[ $pct -ge 90 ]] && color="$R"
+    printf "${color}["
+    printf '█%.0s' $(seq 1 $filled 2>/dev/null) 2>/dev/null || true
+    printf '░%.0s' $(seq 1 $empty 2>/dev/null) 2>/dev/null || true
+    printf "]${NC}"
+}
 
 # Get system info
 HOSTNAME=$(hostname)
 OS=$(cat /etc/redhat-release 2>/dev/null || grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
 KERNEL=$(uname -r)
-UPTIME=$(uptime -p | sed 's/up //')
+UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' || echo "unknown")
 
 # CPU
-CPU_CORES=$(nproc)
-CPU_LOAD=$(awk '{printf "%.0f", $1 * 100 / '"$CPU_CORES"'}' /proc/loadavg)
-LOAD_AVG=$(cat /proc/loadavg | awk '{print $1, $2, $3}')
+CPU_CORES=$(nproc 2>/dev/null || echo 1)
+CPU_LOAD=$(awk '{printf "%.0f", $1 * 100 / '"$CPU_CORES"'}' /proc/loadavg 2>/dev/null || echo 0)
+[[ $CPU_LOAD -gt 100 ]] && CPU_LOAD=100
 
 # Memory
-MEM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
-MEM_USED=$(free -m | awk '/^Mem:/{print $3}')
+MEM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 1)
+MEM_USED=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}' || echo 0)
 MEM_PERCENT=$((MEM_USED * 100 / MEM_TOTAL))
-
-# Format memory with appropriate unit
 if [[ $MEM_TOTAL -ge 1024 ]]; then
     MEM_TOTAL_FMT=$(awk "BEGIN {printf \"%.1fGB\", $MEM_TOTAL/1024}")
     MEM_USED_FMT=$(awk "BEGIN {printf \"%.1fGB\", $MEM_USED/1024}")
@@ -1858,101 +1880,145 @@ else
 fi
 
 # Swap
-SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
-SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
+SWAP_TOTAL=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
+SWAP_USED=$(free -m 2>/dev/null | awk '/^Swap:/{print $3}' || echo 0)
 if [[ $SWAP_TOTAL -gt 0 ]]; then
     SWAP_PERCENT=$((SWAP_USED * 100 / SWAP_TOTAL))
-    SWAP_INFO="${SWAP_USED}MB / ${SWAP_TOTAL}MB (${SWAP_PERCENT}%)"
+    if [[ $SWAP_TOTAL -ge 1024 ]]; then
+        SWAP_TOTAL_FMT=$(awk "BEGIN {printf \"%.1fGB\", $SWAP_TOTAL/1024}")
+        SWAP_USED_FMT=$(awk "BEGIN {printf \"%.1fGB\", $SWAP_USED/1024}")
+    else
+        SWAP_TOTAL_FMT="${SWAP_TOTAL}MB"
+        SWAP_USED_FMT="${SWAP_USED}MB"
+    fi
 else
-    SWAP_INFO="Not configured"
+    SWAP_PERCENT=0
+    SWAP_TOTAL_FMT="N/A"
+    SWAP_USED_FMT="N/A"
 fi
 
 # Disk
-DISK_TOTAL=$(df -BG / | awk 'NR==2{gsub("G",""); print $2}')
-DISK_USED=$(df -BG / | awk 'NR==2{gsub("G",""); print $3}')
-DISK_PERCENT=$(df / | awk 'NR==2{gsub("%",""); print $5}')
+DISK_TOTAL=$(df -BG / 2>/dev/null | awk 'NR==2{gsub("G",""); print $2}' || echo 1)
+DISK_USED=$(df -BG / 2>/dev/null | awk 'NR==2{gsub("G",""); print $3}' || echo 0)
+DISK_PERCENT=$(df / 2>/dev/null | awk 'NR==2{gsub("%",""); print $5}' || echo 0)
 
-# SELinux status
-SELINUX_STATUS=$(getenforce 2>/dev/null || echo "N/A")
+# Last login
+LAST_LOGIN=$(last -1 -R 2>/dev/null | head -1 | awk '{if(NF>=5) print $4" "$5" "$6" from "$3; else print "N/A"}')
+[[ -z "$LAST_LOGIN" || "$LAST_LOGIN" == *"wtmp"* ]] && LAST_LOGIN="First login"
 
-# Color based on usage
-color_percent() {
-    local pct=$1
-    if [[ $pct -ge 90 ]]; then echo -e "${R}"
-    elif [[ $pct -ge 70 ]]; then echo -e "${Y}"
-    else echo -e "${G}"
-    fi
-}
+# Updates (RHEL uses dnf)
+UPDATES="0"
 
-CPU_COLOR=$(color_percent $CPU_LOAD)
-MEM_COLOR=$(color_percent $MEM_PERCENT)
-DISK_COLOR=$(color_percent $DISK_PERCENT)
+echo ""
 
-# Box width
-WIDTH=64
+# ASCII Banner (figlet or fallback)
+if command -v figlet &>/dev/null; then
+    figlet -f slant "$HOSTNAME" 2>/dev/null | while read -r line; do
+        printf "${C}%s${NC}\n" "$line"
+    done
+else
+    printf "${C}${B}  %s${NC}\n" "$HOSTNAME"
+fi
 
-# Print top border
-printf "${C}╭"
-printf '─%.0s' $(seq 1 $((WIDTH-2)))
-printf "╮${NC}\n"
+echo ""
 
-# Print header
-printf "${C}│${NC}  ${W}%-$((WIDTH-23))s${NC} %18s ${C}│${NC}\n" "$HOSTNAME" "$OS"
+# Top border
+printf "${C}╔"
+printf '═%.0s' $(seq 1 $((WIDTH-2)))
+printf "╗${NC}\n"
 
-# Print separator
-printf "${C}├"
-printf '─%.0s' $(seq 1 $((WIDTH-2)))
-printf "┤${NC}\n"
+# System | Network header
+printf "${C}║${NC}  ${W}${B}SYSTEM${NC}                                        ${C}│${NC}  ${W}${B}NETWORK${NC}                                 ${C}║${NC}\n"
 
-# Print stats
-printf "${C}│${NC}                                                              ${C}│${NC}\n"
-printf "${C}│${NC}  ${D}CPU${NC}     %-2s cores @ ${CPU_COLOR}%-3s%%${NC}         ${D}Memory${NC}   ${MEM_COLOR}%-8s${NC} / %-8s ${C}│${NC}\n" "$CPU_CORES" "$CPU_LOAD" "$MEM_USED_FMT" "$MEM_TOTAL_FMT"
-printf "${C}│${NC}  ${D}Disk${NC}    ${DISK_COLOR}%-3sGB${NC} / %-3sGB (${DISK_COLOR}%-3s%%${NC})     ${D}Swap${NC}     %-22s ${C}│${NC}\n" "$DISK_USED" "$DISK_TOTAL" "$DISK_PERCENT" "$SWAP_INFO"
-printf "${C}│${NC}  ${D}Uptime${NC}  %-20s  ${D}Load${NC}     %-22s ${C}│${NC}\n" "$UPTIME" "$LOAD_AVG"
-printf "${C}│${NC}  ${D}SELinux${NC} %-20s                               ${C}│${NC}\n" "$SELINUX_STATUS"
-printf "${C}│${NC}                                                              ${C}│${NC}\n"
+# Separator
+printf "${C}╠"
+printf '─%.0s' $(seq 1 46)
+printf "┼"
+printf '─%.0s' $(seq 1 41)
+printf "╣${NC}\n"
 
-# Network interfaces
-printf "${C}│${NC}  ${D}Network${NC}                                                       ${C}│${NC}\n"
+# Collect network interfaces
+NET_INFO=""
 while read -r iface ip; do
-    # Determine interface type
     case "$iface" in
-        wg*) type="wireguard" ;;
-        docker*|br-*) type="docker" ;;
         lo) continue ;;
+        wg*) type="vpn" ;;
+        docker*|br-*|veth*) continue ;;
         *) type="public" ;;
     esac
-    printf "${C}│${NC}    ${W}%-8s${NC} %-18s ${D}(%s)${NC}%*s${C}│${NC}\n" "$iface" "$ip" "$type" $((23 - ${#type})) ""
-done < <(ip -4 -o addr show | awk '{print $2, $4}' | cut -d/ -f1)
-printf "${C}│${NC}                                                              ${C}│${NC}\n"
+    NET_INFO="${NET_INFO}${iface}|${ip}|${type}\n"
+done < <(ip -4 -o addr show 2>/dev/null | awk '{print $2, $4}' | cut -d/ -f1)
 
-# Docker/Podman status (if installed)
-if command -v docker &>/dev/null; then
-    DOCKER_TOTAL=$(docker ps -aq 2>/dev/null | wc -l)
-    DOCKER_RUNNING=$(docker ps -q 2>/dev/null | wc -l)
-    printf "${C}│${NC}  ${D}Docker${NC}  ${G}%s${NC} containers (${W}%s${NC} running)%*s${C}│${NC}\n" "$DOCKER_TOTAL" "$DOCKER_RUNNING" $((32 - ${#DOCKER_TOTAL} - ${#DOCKER_RUNNING})) ""
-elif command -v podman &>/dev/null; then
-    PODMAN_TOTAL=$(podman ps -aq 2>/dev/null | wc -l)
-    PODMAN_RUNNING=$(podman ps -q 2>/dev/null | wc -l)
-    printf "${C}│${NC}  ${D}Podman${NC}  ${G}%s${NC} containers (${W}%s${NC} running)%*s${C}│${NC}\n" "$PODMAN_TOTAL" "$PODMAN_RUNNING" $((32 - ${#PODMAN_TOTAL} - ${#PODMAN_RUNNING})) ""
+# Convert to array
+IFS=$'\n' read -d '' -ra NET_LINES < <(printf "$NET_INFO") || true
+
+# Row 1: OS | Network 1
+net_line=""
+if [[ ${#NET_LINES[@]} -ge 1 ]]; then
+    IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[0]}"
+    net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
 fi
+printf "${C}║${NC}  ${D}OS${NC}        %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$OS" "$net_line"
 
-# Updates available (dnf)
-if command -v dnf &>/dev/null; then
-    UPDATES=$(dnf check-update --quiet 2>/dev/null | grep -v "^$" | wc -l)
-    if [[ -n "$UPDATES" && "$UPDATES" -gt 0 ]]; then
-        printf "${C}│${NC}  ${D}Updates${NC} ${Y}%s${NC} available%*s${C}│${NC}\n" "$UPDATES" $((42 - ${#UPDATES})) ""
-    fi
+# Row 2: Kernel | Network 2
+net_line=""
+if [[ ${#NET_LINES[@]} -ge 2 ]]; then
+    IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[1]}"
+    net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
 fi
+printf "${C}║${NC}  ${D}Kernel${NC}    %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$KERNEL" "$net_line"
 
-printf "${C}│${NC}                                                              ${C}│${NC}\n"
+# Row 3: Uptime | Network 3
+net_line=""
+if [[ ${#NET_LINES[@]} -ge 3 ]]; then
+    IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[2]}"
+    net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
+fi
+printf "${C}║${NC}  ${D}Uptime${NC}    %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$UPTIME" "$net_line"
 
-# Print bottom border
-printf "${C}╰"
+# Separator for resources
+printf "${C}╠"
+printf '═%.0s' $(seq 1 $((WIDTH-2)))
+printf "╣${NC}\n"
+
+# Resources header
+printf "${C}║${NC}  ${W}${B}RESOURCES${NC}                                                                                  ${C}║${NC}\n"
+
+# Separator
+printf "${C}╠"
 printf '─%.0s' $(seq 1 $((WIDTH-2)))
-printf "╯${NC}\n"
+printf "╣${NC}\n"
 
-echo
+# CPU
+printf "${C}║${NC}  ${D}CPU${NC}       $(progress_bar $CPU_LOAD)  %3d%%   %-3s cores                                          ${C}║${NC}\n" "$CPU_LOAD" "$CPU_CORES"
+
+# Memory
+printf "${C}║${NC}  ${D}Memory${NC}    $(progress_bar $MEM_PERCENT)  %3d%%   %s / %s                                    ${C}║${NC}\n" "$MEM_PERCENT" "$MEM_USED_FMT" "$MEM_TOTAL_FMT"
+
+# Disk
+printf "${C}║${NC}  ${D}Disk${NC}      $(progress_bar $DISK_PERCENT)  %3d%%   %sGB / %sGB                                      ${C}║${NC}\n" "$DISK_PERCENT" "$DISK_USED" "$DISK_TOTAL"
+
+# Swap
+if [[ "$SWAP_TOTAL_FMT" != "N/A" ]]; then
+    printf "${C}║${NC}  ${D}Swap${NC}      $(progress_bar $SWAP_PERCENT)  %3d%%   %s / %s                                    ${C}║${NC}\n" "$SWAP_PERCENT" "$SWAP_USED_FMT" "$SWAP_TOTAL_FMT"
+fi
+
+# Footer separator
+printf "${C}╠"
+printf '─%.0s' $(seq 1 $((WIDTH-2)))
+printf "╣${NC}\n"
+
+# Footer: Last login | Updates
+updates_text=""
+[[ "$UPDATES" -gt 0 ]] && updates_text="${Y}${UPDATES} updates available${NC}"
+printf "${C}║${NC}  ${D}Last login:${NC} %-43s %s%*s${C}║${NC}\n" "$LAST_LOGIN" "$updates_text" $((23 - ${#UPDATES})) ""
+
+# Bottom border
+printf "${C}╚"
+printf '═%.0s' $(seq 1 $((WIDTH-2)))
+printf "╝${NC}\n"
+
+echo ""
 MOTDEOF
 
         chmod +x /etc/profile.d/motd.sh
@@ -1965,7 +2031,7 @@ MOTDEOF
 
         # Show preview
         printf "\n${CYAN}Preview:${NC}\n\n"
-        source /etc/profile.d/motd.sh
+        SSH_TTY=1 source /etc/profile.d/motd.sh
     fi
 
     # Remove Multipathd

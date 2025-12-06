@@ -1761,6 +1761,11 @@ EOF
         run_cmd "systemctl disable motd-news.timer" || true
         run_cmd "systemctl stop motd-news.timer" || true
 
+        # Install figlet if not present (for ASCII banner)
+        if ! command -v figlet &>/dev/null; then
+            apt-get install -y figlet >/dev/null 2>&1 || true
+        fi
+
         # Create custom MOTD script
         cat > /etc/update-motd.d/00-custom-motd << 'MOTDEOF'
 #!/bin/bash
@@ -1772,25 +1777,42 @@ Y='\033[1;33m'    # Yellow
 R='\033[0;31m'    # Red
 W='\033[1;37m'    # White
 D='\033[0;90m'    # Dim
+B='\033[1m'       # Bold
 NC='\033[0m'      # No Color
+
+# Box width
+WIDTH=90
+
+# Progress bar function
+progress_bar() {
+    local pct=$1
+    local width=20
+    local filled=$((pct * width / 100))
+    local empty=$((width - filled))
+    local color="$G"
+    [[ $pct -ge 70 ]] && color="$Y"
+    [[ $pct -ge 90 ]] && color="$R"
+    printf "${color}["
+    printf '█%.0s' $(seq 1 $filled 2>/dev/null) 2>/dev/null || true
+    printf '░%.0s' $(seq 1 $empty 2>/dev/null) 2>/dev/null || true
+    printf "]${NC}"
+}
 
 # Get system info
 HOSTNAME=$(hostname)
-OS=$(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)
+OS=$(lsb_release -ds 2>/dev/null || grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
 KERNEL=$(uname -r)
-UPTIME=$(uptime -p | sed 's/up //')
+UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' || echo "unknown")
 
 # CPU
-CPU_CORES=$(nproc)
-CPU_LOAD=$(awk '{printf "%.0f", $1 * 100 / '"$CPU_CORES"'}' /proc/loadavg)
-LOAD_AVG=$(cat /proc/loadavg | awk '{print $1, $2, $3}')
+CPU_CORES=$(nproc 2>/dev/null || echo 1)
+CPU_LOAD=$(awk '{printf "%.0f", $1 * 100 / '"$CPU_CORES"'}' /proc/loadavg 2>/dev/null || echo 0)
+[[ $CPU_LOAD -gt 100 ]] && CPU_LOAD=100
 
 # Memory
-MEM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
-MEM_USED=$(free -m | awk '/^Mem:/{print $3}')
+MEM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 1)
+MEM_USED=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}' || echo 0)
 MEM_PERCENT=$((MEM_USED * 100 / MEM_TOTAL))
-
-# Format memory with appropriate unit
 if [[ $MEM_TOTAL -ge 1024 ]]; then
     MEM_TOTAL_FMT=$(awk "BEGIN {printf \"%.1fGB\", $MEM_TOTAL/1024}")
     MEM_USED_FMT=$(awk "BEGIN {printf \"%.1fGB\", $MEM_USED/1024}")
@@ -1800,93 +1822,149 @@ else
 fi
 
 # Swap
-SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
-SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
+SWAP_TOTAL=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
+SWAP_USED=$(free -m 2>/dev/null | awk '/^Swap:/{print $3}' || echo 0)
 if [[ $SWAP_TOTAL -gt 0 ]]; then
     SWAP_PERCENT=$((SWAP_USED * 100 / SWAP_TOTAL))
-    SWAP_INFO="${SWAP_USED}MB / ${SWAP_TOTAL}MB (${SWAP_PERCENT}%)"
+    if [[ $SWAP_TOTAL -ge 1024 ]]; then
+        SWAP_TOTAL_FMT=$(awk "BEGIN {printf \"%.1fGB\", $SWAP_TOTAL/1024}")
+        SWAP_USED_FMT=$(awk "BEGIN {printf \"%.1fGB\", $SWAP_USED/1024}")
+    else
+        SWAP_TOTAL_FMT="${SWAP_TOTAL}MB"
+        SWAP_USED_FMT="${SWAP_USED}MB"
+    fi
 else
-    SWAP_INFO="Not configured"
+    SWAP_PERCENT=0
+    SWAP_TOTAL_FMT="N/A"
+    SWAP_USED_FMT="N/A"
 fi
 
 # Disk
-DISK_TOTAL=$(df -BG / | awk 'NR==2{gsub("G",""); print $2}')
-DISK_USED=$(df -BG / | awk 'NR==2{gsub("G",""); print $3}')
-DISK_PERCENT=$(df / | awk 'NR==2{gsub("%",""); print $5}')
+DISK_TOTAL=$(df -BG / 2>/dev/null | awk 'NR==2{gsub("G",""); print $2}' || echo 1)
+DISK_USED=$(df -BG / 2>/dev/null | awk 'NR==2{gsub("G",""); print $3}' || echo 0)
+DISK_PERCENT=$(df / 2>/dev/null | awk 'NR==2{gsub("%",""); print $5}' || echo 0)
 
-# Color based on usage
-color_percent() {
-    local pct=$1
-    if [[ $pct -ge 90 ]]; then echo -e "${R}"
-    elif [[ $pct -ge 70 ]]; then echo -e "${Y}"
-    else echo -e "${G}"
-    fi
-}
+# Last login
+LAST_LOGIN=$(last -1 -R 2>/dev/null | head -1 | awk '{if(NF>=5) print $4" "$5" "$6" from "$3; else print "N/A"}')
+[[ -z "$LAST_LOGIN" || "$LAST_LOGIN" == *"wtmp"* ]] && LAST_LOGIN="First login"
 
-CPU_COLOR=$(color_percent $CPU_LOAD)
-MEM_COLOR=$(color_percent $MEM_PERCENT)
-DISK_COLOR=$(color_percent $DISK_PERCENT)
-
-# Box width
-WIDTH=64
-
-# Print top border
-printf "${C}╭"
-printf '─%.0s' $(seq 1 $((WIDTH-2)))
-printf "╮${NC}\n"
-
-# Print header
-printf "${C}│${NC}  ${W}%-$((WIDTH-23))s${NC} %18s ${C}│${NC}\n" "$HOSTNAME" "$OS"
-
-# Print separator
-printf "${C}├"
-printf '─%.0s' $(seq 1 $((WIDTH-2)))
-printf "┤${NC}\n"
-
-# Print stats
-printf "${C}│${NC}                                                              ${C}│${NC}\n"
-printf "${C}│${NC}  ${D}CPU${NC}     %-2s cores @ ${CPU_COLOR}%-3s%%${NC}         ${D}Memory${NC}   ${MEM_COLOR}%-8s${NC} / %-8s ${C}│${NC}\n" "$CPU_CORES" "$CPU_LOAD" "$MEM_USED_FMT" "$MEM_TOTAL_FMT"
-printf "${C}│${NC}  ${D}Disk${NC}    ${DISK_COLOR}%-3sGB${NC} / %-3sGB (${DISK_COLOR}%-3s%%${NC})     ${D}Swap${NC}     %-22s ${C}│${NC}\n" "$DISK_USED" "$DISK_TOTAL" "$DISK_PERCENT" "$SWAP_INFO"
-printf "${C}│${NC}  ${D}Uptime${NC}  %-20s  ${D}Load${NC}     %-22s ${C}│${NC}\n" "$UPTIME" "$LOAD_AVG"
-printf "${C}│${NC}                                                              ${C}│${NC}\n"
-
-# Network interfaces
-printf "${C}│${NC}  ${D}Network${NC}                                                       ${C}│${NC}\n"
-while read -r iface ip; do
-    # Determine interface type
-    case "$iface" in
-        wg*) type="wireguard" ;;
-        docker*|br-*) type="docker" ;;
-        lo) continue ;;
-        *) type="public" ;;
-    esac
-    printf "${C}│${NC}    ${W}%-8s${NC} %-18s ${D}(%s)${NC}%*s${C}│${NC}\n" "$iface" "$ip" "$type" $((23 - ${#type})) ""
-done < <(ip -4 -o addr show | awk '{print $2, $4}' | cut -d/ -f1)
-printf "${C}│${NC}                                                              ${C}│${NC}\n"
-
-# Docker status (if installed)
-if command -v docker &>/dev/null; then
-    DOCKER_TOTAL=$(docker ps -aq 2>/dev/null | wc -l)
-    DOCKER_RUNNING=$(docker ps -q 2>/dev/null | wc -l)
-    printf "${C}│${NC}  ${D}Docker${NC}  ${G}%s${NC} containers (${W}%s${NC} running)%*s${C}│${NC}\n" "$DOCKER_TOTAL" "$DOCKER_RUNNING" $((32 - ${#DOCKER_TOTAL} - ${#DOCKER_RUNNING})) ""
-fi
-
-# Updates available
+# Updates
+UPDATES=""
 if [[ -f /var/lib/update-notifier/updates-available ]]; then
     UPDATES=$(grep -oP '^\d+' /var/lib/update-notifier/updates-available 2>/dev/null | head -1)
-    if [[ -n "$UPDATES" && "$UPDATES" -gt 0 ]]; then
-        printf "${C}│${NC}  ${D}Updates${NC} ${Y}%s${NC} available%*s${C}│${NC}\n" "$UPDATES" $((42 - ${#UPDATES})) ""
-    fi
+fi
+[[ -z "$UPDATES" ]] && UPDATES="0"
+
+echo ""
+
+# ASCII Banner (figlet or fallback)
+if command -v figlet &>/dev/null; then
+    figlet -f slant "$HOSTNAME" 2>/dev/null | while read -r line; do
+        printf "${C}%s${NC}\n" "$line"
+    done
+else
+    printf "${C}${B}  %s${NC}\n" "$HOSTNAME"
 fi
 
-printf "${C}│${NC}                                                              ${C}│${NC}\n"
+echo ""
 
-# Print bottom border
-printf "${C}╰"
+# Top border
+printf "${C}╔"
+printf '═%.0s' $(seq 1 $((WIDTH-2)))
+printf "╗${NC}\n"
+
+# System | Network header
+printf "${C}║${NC}  ${W}${B}SYSTEM${NC}                                        ${C}│${NC}  ${W}${B}NETWORK${NC}                                 ${C}║${NC}\n"
+
+# Separator
+printf "${C}╠"
+printf '─%.0s' $(seq 1 46)
+printf "┼"
+printf '─%.0s' $(seq 1 41)
+printf "╣${NC}\n"
+
+# Collect network interfaces
+NET_INFO=""
+while read -r iface ip; do
+    case "$iface" in
+        lo) continue ;;
+        wg*) type="vpn" ;;
+        docker*|br-*|veth*) continue ;;
+        *) type="public" ;;
+    esac
+    NET_INFO="${NET_INFO}${iface}|${ip}|${type}\n"
+done < <(ip -4 -o addr show 2>/dev/null | awk '{print $2, $4}' | cut -d/ -f1)
+
+# Convert to array
+IFS=$'\n' read -d '' -ra NET_LINES < <(printf "$NET_INFO") || true
+
+# Row 1: OS | Network 1
+net_line=""
+if [[ ${#NET_LINES[@]} -ge 1 ]]; then
+    IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[0]}"
+    net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
+fi
+printf "${C}║${NC}  ${D}OS${NC}        %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$OS" "$net_line"
+
+# Row 2: Kernel | Network 2
+net_line=""
+if [[ ${#NET_LINES[@]} -ge 2 ]]; then
+    IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[1]}"
+    net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
+fi
+printf "${C}║${NC}  ${D}Kernel${NC}    %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$KERNEL" "$net_line"
+
+# Row 3: Uptime | Network 3
+net_line=""
+if [[ ${#NET_LINES[@]} -ge 3 ]]; then
+    IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[2]}"
+    net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
+fi
+printf "${C}║${NC}  ${D}Uptime${NC}    %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$UPTIME" "$net_line"
+
+# Separator for resources
+printf "${C}╠"
+printf '═%.0s' $(seq 1 $((WIDTH-2)))
+printf "╣${NC}\n"
+
+# Resources header
+printf "${C}║${NC}  ${W}${B}RESOURCES${NC}                                                                                  ${C}║${NC}\n"
+
+# Separator
+printf "${C}╠"
 printf '─%.0s' $(seq 1 $((WIDTH-2)))
-printf "╯${NC}\n"
+printf "╣${NC}\n"
 
-echo
+# CPU
+printf "${C}║${NC}  ${D}CPU${NC}       $(progress_bar $CPU_LOAD)  %3d%%   %-3s cores                                          ${C}║${NC}\n" "$CPU_LOAD" "$CPU_CORES"
+
+# Memory
+printf "${C}║${NC}  ${D}Memory${NC}    $(progress_bar $MEM_PERCENT)  %3d%%   %s / %s                                    ${C}║${NC}\n" "$MEM_PERCENT" "$MEM_USED_FMT" "$MEM_TOTAL_FMT"
+
+# Disk
+printf "${C}║${NC}  ${D}Disk${NC}      $(progress_bar $DISK_PERCENT)  %3d%%   %sGB / %sGB                                      ${C}║${NC}\n" "$DISK_PERCENT" "$DISK_USED" "$DISK_TOTAL"
+
+# Swap
+if [[ "$SWAP_TOTAL_FMT" != "N/A" ]]; then
+    printf "${C}║${NC}  ${D}Swap${NC}      $(progress_bar $SWAP_PERCENT)  %3d%%   %s / %s                                    ${C}║${NC}\n" "$SWAP_PERCENT" "$SWAP_USED_FMT" "$SWAP_TOTAL_FMT"
+fi
+
+# Footer separator
+printf "${C}╠"
+printf '─%.0s' $(seq 1 $((WIDTH-2)))
+printf "╣${NC}\n"
+
+# Footer: Last login | Updates
+updates_text=""
+[[ "$UPDATES" -gt 0 ]] && updates_text="${Y}${UPDATES} updates available${NC}"
+printf "${C}║${NC}  ${D}Last login:${NC} %-43s %s%*s${C}║${NC}\n" "$LAST_LOGIN" "$updates_text" $((23 - ${#UPDATES})) ""
+
+# Bottom border
+printf "${C}╚"
+printf '═%.0s' $(seq 1 $((WIDTH-2)))
+printf "╝${NC}\n"
+
+echo ""
 MOTDEOF
 
         chmod +x /etc/update-motd.d/00-custom-motd
@@ -2576,11 +2654,212 @@ module_disk() {
 }
 
 # =============================================================================
+# MODULE: NETWORK CONFIGURATION
+# =============================================================================
+
+module_network() {
+    print_section "NETWORK CONFIGURATION" "$SYM_NET" "12"
+    CURRENT_MODULE="Network Configuration"
+
+    if ! confirm "Configure network settings?"; then
+        print_module_skipped "$CURRENT_MODULE"
+        MODULE_STATUS["network"]="skipped"
+        return 0
+    fi
+
+    # Check if netplan is available
+    if ! command -v netplan &>/dev/null; then
+        log_warning "Netplan not found - network configuration not available"
+        print_module_skipped "$CURRENT_MODULE"
+        return 0
+    fi
+
+    # Detect netplan version for gateway syntax
+    local netplan_ver
+    netplan_ver=$(netplan --version 2>/dev/null | grep -oP '[\d.]+' | head -1)
+    local use_routes=true
+    if [[ -n "$netplan_ver" ]]; then
+        local major minor
+        major=$(echo "$netplan_ver" | cut -d. -f1)
+        minor=$(echo "$netplan_ver" | cut -d. -f2)
+        # gateway4 deprecated in 0.104+
+        if [[ "$major" -eq 0 && "$minor" -lt 104 ]]; then
+            use_routes=false
+        fi
+    fi
+
+    print_subsection "Current Network Configuration"
+
+    # Get default gateway
+    local default_gw
+    default_gw=$(ip route | awk '/default/ {print $3; exit}')
+
+    # Get DNS servers
+    local dns_servers
+    dns_servers=$(grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | xargs)
+    [[ -z "$dns_servers" ]] && dns_servers="8.8.8.8 1.1.1.1"
+
+    # Find network interfaces (exclude lo, docker, bridge, veth)
+    local interfaces
+    interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -vE '^(lo|docker|br-|veth|virbr)')
+
+    if [[ -z "$interfaces" ]]; then
+        log_warning "No configurable network interfaces found"
+        return 0
+    fi
+
+    # Display current config for each interface
+    for iface in $interfaces; do
+        local ip_addr cidr mac state
+        ip_addr=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
+        cidr=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f2)
+        mac=$(ip link show "$iface" 2>/dev/null | awk '/link\/ether/ {print $2}')
+        state=$(ip link show "$iface" 2>/dev/null | grep -oP 'state \K\S+')
+
+        # Check if DHCP
+        local is_dhcp="unknown"
+        if grep -rq "dhcp" /etc/netplan/*.yaml 2>/dev/null; then
+            if grep -A5 "$iface" /etc/netplan/*.yaml 2>/dev/null | grep -q "dhcp4: true\|dhcp4: yes"; then
+                is_dhcp="yes"
+            else
+                is_dhcp="no"
+            fi
+        fi
+
+        printf "\n"
+        printf "  ${WHITE}Interface:${NC}  %s (%s)\n" "$iface" "$state"
+        printf "  ${WHITE}MAC:${NC}        %s\n" "$mac"
+        printf "  ${WHITE}IP:${NC}         %s/%s\n" "${ip_addr:-none}" "${cidr:-}"
+        printf "  ${WHITE}Gateway:${NC}    %s\n" "${default_gw:-none}"
+        printf "  ${WHITE}DNS:${NC}        %s\n" "$dns_servers"
+        printf "  ${WHITE}DHCP:${NC}       %s\n" "$is_dhcp"
+    done
+
+    printf "\n"
+
+    # Ask about static IP configuration
+    if confirm "Generate static IP configuration from current settings?"; then
+        print_subsection "Generating Netplan Configuration"
+
+        # Backup existing netplan configs
+        local backup_time
+        backup_time=$(date +%Y%m%d-%H%M%S)
+        mkdir -p "$BACKUP_DIR/netplan"
+        cp /etc/netplan/*.yaml "$BACKUP_DIR/netplan/" 2>/dev/null || true
+        log_info "Backed up existing netplan configs to $BACKUP_DIR/netplan/"
+
+        # Generate new config
+        local config_file="/etc/netplan/01-static-config.yaml"
+        local preview_file="/tmp/netplan-preview.yaml"
+
+        cat > "$preview_file" << NETPLANEOF
+# Generated by server-setup script
+# Backup of original configs in: $BACKUP_DIR/netplan/
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+NETPLANEOF
+
+        for iface in $interfaces; do
+            local ip_addr cidr
+            ip_addr=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
+            cidr=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f2)
+
+            [[ -z "$ip_addr" ]] && continue
+
+            cat >> "$preview_file" << IFACEEOF
+    $iface:
+      addresses:
+        - ${ip_addr}/${cidr}
+IFACEEOF
+
+            # Add gateway (only for first interface with IP)
+            if [[ -n "$default_gw" ]]; then
+                if [[ "$use_routes" == true ]]; then
+                    cat >> "$preview_file" << GWEOF
+      routes:
+        - to: default
+          via: $default_gw
+GWEOF
+                else
+                    cat >> "$preview_file" << GWEOF
+      gateway4: $default_gw
+GWEOF
+                fi
+                # Only add gateway once
+                default_gw=""
+            fi
+
+            # Add DNS
+            local dns_array
+            dns_array=$(echo "$dns_servers" | sed 's/ /, /g')
+            cat >> "$preview_file" << DNSEOF
+      nameservers:
+        addresses: [$dns_array]
+DNSEOF
+
+        done
+
+        # Show preview
+        printf "\n${CYAN}Generated configuration:${NC}\n"
+        printf "${GRAY}─────────────────────────────────────────${NC}\n"
+        cat "$preview_file"
+        printf "${GRAY}─────────────────────────────────────────${NC}\n\n"
+
+        if confirm "Apply this configuration?"; then
+            # Remove old configs
+            rm -f /etc/netplan/*.yaml
+
+            # Write new config
+            cp "$preview_file" "$config_file"
+            chmod 600 "$config_file"
+
+            log_success "Configuration written to $config_file"
+
+            # Test configuration
+            printf "\n${YELLOW}Testing configuration...${NC}\n"
+            if netplan generate 2>&1; then
+                log_success "Configuration syntax valid"
+
+                printf "\n${RED}${BOLD}WARNING:${NC} Applying network changes may disconnect your session!\n"
+                printf "${YELLOW}Make sure you have console access or another way to connect.${NC}\n\n"
+
+                if confirm "Apply configuration now? (netplan apply)"; then
+                    netplan apply
+                    log_success "Network configuration applied"
+                    record_change "Applied static network configuration"
+
+                    # Show new IP
+                    sleep 2
+                    printf "\n${CYAN}Current network status:${NC}\n"
+                    ip -4 addr show | grep -E "inet " | grep -v "127.0.0.1"
+                else
+                    log_info "Configuration saved but not applied"
+                    log_info "Run 'sudo netplan apply' to apply changes"
+                fi
+            else
+                log_error "Configuration syntax error - not applied"
+                log_info "Restoring original configuration..."
+                cp "$BACKUP_DIR/netplan/"*.yaml /etc/netplan/ 2>/dev/null || true
+            fi
+        fi
+
+        rm -f "$preview_file"
+    fi
+
+    print_module_complete "Network Configuration"
+    MODULE_STATUS["network"]="complete"
+
+    pause
+}
+
+# =============================================================================
 # MODULE: SYSTEM UPDATE
 # =============================================================================
 
 module_system_update() {
-    print_section "SYSTEM UPDATE" "$SYM_ROCKET" "12"
+    print_section "SYSTEM UPDATE" "$SYM_ROCKET" "13"
     CURRENT_MODULE="System Update"
 
     if ! confirm "Update system packages?"; then
@@ -2696,10 +2975,11 @@ show_main_menu() {
     printf "${CYAN}║${NC}   ${WHITE}[9]${NC} ${SYM_CLOCK} Automatic Updates                                              ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}  ${WHITE}[10]${NC} ${SYM_LOCK} Additional Security                                            ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}  ${WHITE}[11]${NC} ${SYM_DISK} Disk Management                                                ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[12]${NC} ${SYM_ROCKET} System Update                                                  ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}  ${WHITE}[12]${NC} ${SYM_NET} Network Configuration                                          ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}  ${WHITE}[13]${NC} ${SYM_ROCKET} System Update                                                  ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[13]${NC} ${SYM_INFO} System Status                                                  ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[14]${NC} ${SYM_STAR} Security Audit (lynis)                                        ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}  ${WHITE}[14]${NC} ${SYM_INFO} System Status                                                  ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}  ${WHITE}[15]${NC} ${SYM_STAR} Security Audit (lynis)                                        ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}   ${WHITE}[0]${NC} ${RED}Exit${NC}                                                             ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
@@ -2719,6 +2999,7 @@ run_quick_setup() {
     module_auto_updates
     module_security_extras
     module_disk
+    module_network
     module_system_update
     module_post_setup
 }
@@ -2837,9 +3118,10 @@ main() {
             9) module_auto_updates ;;
             10) module_security_extras ;;
             11) module_disk ;;
-            12) module_system_update ;;
-            13) show_system_status ;;
-            14) run_security_audit ;;
+            12) module_network ;;
+            13) module_system_update ;;
+            14) show_system_status ;;
+            15) run_security_audit ;;
             0|q|Q|exit)
                 printf "\n${GREEN}${SYM_PARTY} Thanks for using Server Hardening Script!${NC}\n"
                 printf "${GRAY}Log saved to: ${LOG_FILE}${NC}\n\n"
