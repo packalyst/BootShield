@@ -1121,16 +1121,19 @@ module_ssh_hardening() {
         printf "\n"
 
         if confirm "Apply these SSH changes?"; then
-            # Apply each setting
+            # Apply each setting - update in place or add if missing
             for setting in "${changes_pending[@]}"; do
                 local key=$(echo "$setting" | cut -d' ' -f1)
+                local value=$(echo "$setting" | cut -d' ' -f2-)
 
-                # Comment out existing setting
-                sed -i "s/^${key}/#&/" "$ssh_config"
-                sed -i "s/^#${key}.*/#&/" "$ssh_config"
-
-                # Add new setting
-                echo "$setting" >> "$ssh_config"
+                # Check if key exists (commented or not)
+                if grep -qE "^#?\s*${key}\s" "$ssh_config"; then
+                    # Replace existing line (whether commented or not)
+                    sed -i "s/^#*\s*${key}\s.*/${key} ${value}/" "$ssh_config"
+                else
+                    # Add new setting at end
+                    echo "$setting" >> "$ssh_config"
+                fi
 
                 log "Applied SSH setting: $setting"
             done
@@ -1781,7 +1784,7 @@ B='\033[1m'       # Bold
 NC='\033[0m'      # No Color
 
 # Box width
-WIDTH=90
+WIDTH=96
 
 # Progress bar function
 progress_bar() {
@@ -1873,14 +1876,18 @@ printf "${C}╔"
 printf '═%.0s' $(seq 1 $((WIDTH-2)))
 printf "╗${NC}\n"
 
+# Calculate column widths
+COL1=$((WIDTH / 2 - 2))
+COL2=$((WIDTH - COL1 - 3))
+
 # System | Network header
-printf "${C}║${NC}  ${W}${B}SYSTEM${NC}                                        ${C}│${NC}  ${W}${B}NETWORK${NC}                                 ${C}║${NC}\n"
+printf "${C}║${NC}  ${W}${B}SYSTEM${NC}%-*s${C}│${NC}  ${W}${B}NETWORK${NC}%-*s${C}║${NC}\n" $((COL1 - 8)) "" $((COL2 - 9)) ""
 
 # Separator
 printf "${C}╠"
-printf '─%.0s' $(seq 1 46)
+printf '─%.0s' $(seq 1 $COL1)
 printf "┼"
-printf '─%.0s' $(seq 1 41)
+printf '─%.0s' $(seq 1 $COL2)
 printf "╣${NC}\n"
 
 # Collect network interfaces
@@ -1904,7 +1911,7 @@ if [[ ${#NET_LINES[@]} -ge 1 ]]; then
     IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[0]}"
     net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
 fi
-printf "${C}║${NC}  ${D}OS${NC}        %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$OS" "$net_line"
+printf "${C}║${NC}  ${D}OS${NC}        %-*s${C}│${NC}  %-*s${C}║${NC}\n" $((COL1 - 12)) "$OS" $((COL2 - 3)) "$net_line"
 
 # Row 2: Kernel | Network 2
 net_line=""
@@ -1912,7 +1919,7 @@ if [[ ${#NET_LINES[@]} -ge 2 ]]; then
     IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[1]}"
     net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
 fi
-printf "${C}║${NC}  ${D}Kernel${NC}    %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$KERNEL" "$net_line"
+printf "${C}║${NC}  ${D}Kernel${NC}    %-*s${C}│${NC}  %-*s${C}║${NC}\n" $((COL1 - 12)) "$KERNEL" $((COL2 - 3)) "$net_line"
 
 # Row 3: Uptime | Network 3
 net_line=""
@@ -1920,7 +1927,7 @@ if [[ ${#NET_LINES[@]} -ge 3 ]]; then
     IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[2]}"
     net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
 fi
-printf "${C}║${NC}  ${D}Uptime${NC}    %-35s ${C}│${NC}  %-39s ${C}║${NC}\n" "$UPTIME" "$net_line"
+printf "${C}║${NC}  ${D}Uptime${NC}    %-*s${C}│${NC}  %-*s${C}║${NC}\n" $((COL1 - 12)) "$UPTIME" $((COL2 - 3)) "$net_line"
 
 # Separator for resources
 printf "${C}╠"
@@ -1928,7 +1935,7 @@ printf '═%.0s' $(seq 1 $((WIDTH-2)))
 printf "╣${NC}\n"
 
 # Resources header
-printf "${C}║${NC}  ${W}${B}RESOURCES${NC}                                                                                  ${C}║${NC}\n"
+printf "${C}║${NC}  ${W}${B}RESOURCES${NC}%-*s${C}║${NC}\n" $((WIDTH - 13)) ""
 
 # Separator
 printf "${C}╠"
@@ -1936,17 +1943,21 @@ printf '─%.0s' $(seq 1 $((WIDTH-2)))
 printf "╣${NC}\n"
 
 # CPU
-printf "${C}║${NC}  ${D}CPU${NC}       $(progress_bar $CPU_LOAD)  %3d%%   %-3s cores                                          ${C}║${NC}\n" "$CPU_LOAD" "$CPU_CORES"
+cpu_info=$(printf "%3d%%   %s cores" "$CPU_LOAD" "$CPU_CORES")
+printf "${C}║${NC}  ${D}CPU${NC}       $(progress_bar $CPU_LOAD)  %-*s${C}║${NC}\n" $((WIDTH - 38)) "$cpu_info"
 
 # Memory
-printf "${C}║${NC}  ${D}Memory${NC}    $(progress_bar $MEM_PERCENT)  %3d%%   %s / %s                                    ${C}║${NC}\n" "$MEM_PERCENT" "$MEM_USED_FMT" "$MEM_TOTAL_FMT"
+mem_info=$(printf "%3d%%   %s / %s" "$MEM_PERCENT" "$MEM_USED_FMT" "$MEM_TOTAL_FMT")
+printf "${C}║${NC}  ${D}Memory${NC}    $(progress_bar $MEM_PERCENT)  %-*s${C}║${NC}\n" $((WIDTH - 38)) "$mem_info"
 
 # Disk
-printf "${C}║${NC}  ${D}Disk${NC}      $(progress_bar $DISK_PERCENT)  %3d%%   %sGB / %sGB                                      ${C}║${NC}\n" "$DISK_PERCENT" "$DISK_USED" "$DISK_TOTAL"
+disk_info=$(printf "%3d%%   %sGB / %sGB" "$DISK_PERCENT" "$DISK_USED" "$DISK_TOTAL")
+printf "${C}║${NC}  ${D}Disk${NC}      $(progress_bar $DISK_PERCENT)  %-*s${C}║${NC}\n" $((WIDTH - 38)) "$disk_info"
 
 # Swap
 if [[ "$SWAP_TOTAL_FMT" != "N/A" ]]; then
-    printf "${C}║${NC}  ${D}Swap${NC}      $(progress_bar $SWAP_PERCENT)  %3d%%   %s / %s                                    ${C}║${NC}\n" "$SWAP_PERCENT" "$SWAP_USED_FMT" "$SWAP_TOTAL_FMT"
+    swap_info=$(printf "%3d%%   %s / %s" "$SWAP_PERCENT" "$SWAP_USED_FMT" "$SWAP_TOTAL_FMT")
+    printf "${C}║${NC}  ${D}Swap${NC}      $(progress_bar $SWAP_PERCENT)  %-*s${C}║${NC}\n" $((WIDTH - 38)) "$swap_info"
 fi
 
 # Footer separator
@@ -1956,9 +1967,12 @@ printf "╣${NC}\n"
 
 # Footer: Last login | Updates
 if [[ "$UPDATES" -gt 0 ]]; then
-    printf "${C}║${NC}  ${D}Last login:${NC} %-43s ${Y}%s updates available${NC}%*s${C}║${NC}\n" "$LAST_LOGIN" "$UPDATES" $((5 - ${#UPDATES})) ""
+    footer_left=$(printf "Last login: %s" "$LAST_LOGIN")
+    footer_right=$(printf "%s updates available" "$UPDATES")
+    padding=$((WIDTH - 6 - ${#footer_left} - ${#footer_right}))
+    printf "${C}║${NC}  ${D}%s${NC}%*s${Y}%s${NC}  ${C}║${NC}\n" "$footer_left" "$padding" "" "$footer_right"
 else
-    printf "${C}║${NC}  ${D}Last login:${NC} %-43s %24s${C}║${NC}\n" "$LAST_LOGIN" ""
+    printf "${C}║${NC}  ${D}Last login:${NC} %-*s${C}║${NC}\n" $((WIDTH - 17)) "$LAST_LOGIN"
 fi
 
 # Bottom border
