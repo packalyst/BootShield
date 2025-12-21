@@ -647,7 +647,7 @@ detect_services() {
     # Check various services
     declare -gA SERVICE_STATUS
 
-    local services=("ssh" "sshd" "ufw" "fail2ban" "docker" "nginx" "apache2")
+    local services=("ssh" "ufw" "fail2ban" "docker" "nginx" "apache2")
 
     for svc in "${services[@]}"; do
         if systemctl is-active "$svc" &>/dev/null; then
@@ -658,6 +658,31 @@ detect_services() {
             SERVICE_STATUS[$svc]="not installed"
         fi
     done
+}
+
+# Detect SSH socket activation (Debian 12+)
+detect_ssh_mode() {
+    # Check if ssh.socket is active (socket-based activation)
+    if systemctl is-active ssh.socket &>/dev/null; then
+        SSH_MODE="socket"
+    elif systemctl is-active ssh.service &>/dev/null; then
+        SSH_MODE="service"
+    else
+        SSH_MODE="unknown"
+    fi
+}
+
+# Reload/restart SSH service appropriately for the mode
+reload_ssh() {
+    detect_ssh_mode
+    if [[ "$SSH_MODE" == "socket" ]]; then
+        # Socket-based activation requires restarting the socket
+        systemctl daemon-reload
+        systemctl restart ssh.socket
+    else
+        # Traditional service mode
+        systemctl reload ssh.service 2>/dev/null || systemctl restart ssh.service
+    fi
 }
 
 check_internet() {
@@ -1165,7 +1190,7 @@ module_ssh_hardening() {
                 fi
 
                 if confirm "Reload SSH service now?"; then
-                    run_cmd "systemctl reload sshd"
+                    reload_ssh
                     record_change "SSH hardening applied"
                     log_success "SSH service reloaded"
 
@@ -2572,19 +2597,7 @@ module_network() {
         return 0
     fi
 
-    # Detect netplan version for gateway syntax
-    local netplan_ver
-    netplan_ver=$(netplan --version 2>/dev/null | grep -oP '[\d.]+' | head -1)
-    local use_routes=true
-    if [[ -n "$netplan_ver" ]]; then
-        local major minor
-        major=$(echo "$netplan_ver" | cut -d. -f1)
-        minor=$(echo "$netplan_ver" | cut -d. -f2)
-        # gateway4 deprecated in 0.104+
-        if [[ "$major" -eq 0 && "$minor" -lt 104 ]]; then
-            use_routes=false
-        fi
-    fi
+    # Always use routes syntax (gateway4 deprecated in netplan 0.104+, Debian 11+)
 
     print_subsection "Current Network Configuration"
 
@@ -2592,9 +2605,18 @@ module_network() {
     local default_gw
     default_gw=$(ip route | awk '/default/ {print $3; exit}')
 
-    # Get DNS servers
-    local dns_servers
-    dns_servers=$(grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | xargs)
+    # Get DNS servers (handle systemd-resolved on Debian 12+)
+    local dns_servers=""
+    if command -v resolvectl &>/dev/null && systemctl is-active systemd-resolved &>/dev/null; then
+        # systemd-resolved active - get real DNS servers
+        dns_servers=$(resolvectl status 2>/dev/null | grep -A2 "DNS Servers:" | tail -n+2 | awk '{print $1}' | grep -E '^[0-9]+\.' | tr '\n' ' ' | xargs)
+        # Fallback: try getting from the resolved config
+        [[ -z "$dns_servers" ]] && dns_servers=$(grep -E '^DNS=' /etc/systemd/resolved.conf 2>/dev/null | cut -d= -f2 | tr ' ' '\n' | xargs)
+    fi
+    # Fallback to resolv.conf (works on non-resolved systems)
+    if [[ -z "$dns_servers" ]]; then
+        dns_servers=$(grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | grep -vE '^127\.' | tr '\n' ' ' | xargs)
+    fi
     [[ -z "$dns_servers" ]] && dns_servers="8.8.8.8 1.1.1.1"
 
     # Find network interfaces (exclude lo, docker, bridge, veth)
@@ -2672,19 +2694,13 @@ NETPLANEOF
         - ${ip_addr}/${cidr}
 IFACEEOF
 
-            # Add gateway (only for first interface with IP)
+            # Add gateway using routes syntax (only for first interface with IP)
             if [[ -n "$default_gw" ]]; then
-                if [[ "$use_routes" == true ]]; then
-                    cat >> "$preview_file" << GWEOF
+                cat >> "$preview_file" << GWEOF
       routes:
         - to: default
           via: $default_gw
 GWEOF
-                else
-                    cat >> "$preview_file" << GWEOF
-      gateway4: $default_gw
-GWEOF
-                fi
                 # Only add gateway once
                 default_gw=""
             fi
