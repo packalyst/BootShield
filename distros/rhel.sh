@@ -2762,11 +2762,123 @@ module_disk() {
 }
 
 # =============================================================================
+# MODULE: DATE & TIMEZONE
+# =============================================================================
+
+module_datetime() {
+    print_section "DATE & TIMEZONE" "$SYM_CLOCK" "13"
+    CURRENT_MODULE="Date & Timezone"
+
+    if ! confirm "Configure date and timezone?"; then
+        print_module_skipped "$CURRENT_MODULE"
+        MODULE_STATUS["datetime"]="skipped"
+        return 0
+    fi
+
+    # Show current settings
+    print_subsection "Current Settings"
+    local current_tz current_date current_ntp
+    current_tz=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "Unknown")
+    current_date=$(date '+%Y-%m-%d %H:%M:%S %Z')
+    current_ntp=$(timedatectl show --property=NTP --value 2>/dev/null || echo "Unknown")
+
+    printf "  ${WHITE}Timezone:${NC}    %s\n" "$current_tz"
+    printf "  ${WHITE}Date/Time:${NC}   %s\n" "$current_date"
+    printf "  ${WHITE}NTP Sync:${NC}    %s\n" "$current_ntp"
+    printf "\n"
+
+    # Configure timezone
+    if confirm "Change timezone?"; then
+        print_subsection "Select Timezone"
+
+        # Common timezones
+        local timezones=(
+            "UTC"
+            "Europe/London"
+            "Europe/Paris"
+            "Europe/Berlin"
+            "Europe/Amsterdam"
+            "Europe/Riga"
+            "Europe/Moscow"
+            "America/New_York"
+            "America/Chicago"
+            "America/Denver"
+            "America/Los_Angeles"
+            "Asia/Tokyo"
+            "Asia/Shanghai"
+            "Asia/Singapore"
+            "Australia/Sydney"
+        )
+
+        printf "${CYAN}Common timezones:${NC}\n"
+        for i in "${!timezones[@]}"; do
+            printf "  ${WHITE}[%2d]${NC} %s\n" "$((i+1))" "${timezones[$i]}"
+        done
+        printf "  ${WHITE}[%2d]${NC} Enter custom timezone\n" "$((${#timezones[@]}+1))"
+        printf "\n"
+
+        printf "${YELLOW}>${NC} Select timezone [1-%d]: " "$((${#timezones[@]}+1))"
+        read -r tz_choice </dev/tty
+
+        local new_tz=""
+        if [[ "$tz_choice" =~ ^[0-9]+$ ]]; then
+            if [[ "$tz_choice" -ge 1 && "$tz_choice" -le "${#timezones[@]}" ]]; then
+                new_tz="${timezones[$((tz_choice-1))]}"
+            elif [[ "$tz_choice" -eq "$((${#timezones[@]}+1))" ]]; then
+                printf "${YELLOW}>${NC} Enter timezone (e.g., Europe/Berlin): "
+                read -r new_tz </dev/tty
+            fi
+        fi
+
+        if [[ -n "$new_tz" ]]; then
+            # Validate timezone
+            if [[ -f "/usr/share/zoneinfo/$new_tz" ]]; then
+                timedatectl set-timezone "$new_tz"
+                log_success "Timezone set to $new_tz"
+            else
+                log_error "Invalid timezone: $new_tz"
+            fi
+        fi
+    fi
+
+    # Enable NTP (chrony on RHEL)
+    if [[ "$current_ntp" != "yes" ]]; then
+        if confirm "Enable NTP time synchronization?"; then
+            if systemctl is-enabled chronyd &>/dev/null; then
+                systemctl enable --now chronyd
+                log_success "Chrony NTP synchronization enabled"
+            else
+                timedatectl set-ntp true
+                log_success "NTP synchronization enabled"
+            fi
+        fi
+    else
+        log_info "NTP synchronization already enabled"
+    fi
+
+    # Show updated settings
+    print_subsection "Updated Settings"
+    current_tz=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "Unknown")
+    current_date=$(date '+%Y-%m-%d %H:%M:%S %Z')
+    current_ntp=$(timedatectl show --property=NTP --value 2>/dev/null || echo "Unknown")
+
+    printf "  ${WHITE}Timezone:${NC}    %s\n" "$current_tz"
+    printf "  ${WHITE}Date/Time:${NC}   %s\n" "$current_date"
+    printf "  ${WHITE}NTP Sync:${NC}    %s\n" "$current_ntp"
+    printf "\n"
+
+    print_module_complete "Date & Timezone"
+    MODULE_STATUS["datetime"]="complete"
+
+    pause
+}
+
+# =============================================================================
 # MODULE: SYSTEM UPDATE
 # =============================================================================
 
 module_system_update() {
-    print_section "SYSTEM UPDATE" "$SYM_ROCKET" "13"
+    print_section "SYSTEM UPDATE" "$SYM_ROCKET" "14"
     CURRENT_MODULE="System Update"
 
     if ! confirm "Update system packages?"; then
@@ -2884,10 +2996,11 @@ show_main_menu() {
     printf "${CYAN}║${NC}  ${WHITE}[10]${NC} ${SYM_CLOCK} Automatic Updates                                              ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}  ${WHITE}[11]${NC} ${SYM_LOCK} Additional Security                                            ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}  ${WHITE}[12]${NC} ${SYM_DISK} Disk Management                                                ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[13]${NC} ${SYM_ROCKET} System Update                                                  ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}  ${WHITE}[13]${NC} ${SYM_CLOCK} Date & Timezone                                                ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}  ${WHITE}[14]${NC} ${SYM_ROCKET} System Update                                                  ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[14]${NC} ${SYM_INFO} System Status                                                  ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[15]${NC} ${SYM_STAR} Security Audit (lynis)                                        ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}  ${WHITE}[15]${NC} ${SYM_INFO} System Status                                                  ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}  ${WHITE}[16]${NC} ${SYM_STAR} Security Audit (lynis)                                        ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}   ${WHITE}[0]${NC} ${RED}Exit${NC}                                                             ${CYAN}║${NC}\n"
     printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
@@ -2908,6 +3021,7 @@ run_quick_setup() {
     module_auto_updates
     module_security_extras
     module_disk
+    module_datetime
     module_system_update
     module_post_setup
 }
@@ -3029,9 +3143,10 @@ main() {
             10) module_auto_updates ;;
             11) module_security_extras ;;
             12) module_disk ;;
-            13) module_system_update ;;
-            14) show_system_status ;;
-            15) run_security_audit ;;
+            13) module_datetime ;;
+            14) module_system_update ;;
+            15) show_system_status ;;
+            16) run_security_audit ;;
             0|q|Q|exit)
                 printf "\n${GREEN}${SYM_PARTY} Thanks for using Server Hardening Script!${NC}\n"
                 printf "${GRAY}Log saved to: ${LOG_FILE}${NC}\n\n"
