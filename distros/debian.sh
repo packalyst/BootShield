@@ -2570,6 +2570,105 @@ module_disk() {
         fi
     fi
 
+    # Swap Management
+    print_subsection "Swap Configuration"
+
+    local current_swap swap_file swap_size_mb total_ram_mb recommended_swap
+    current_swap=$(swapon --show --noheadings 2>/dev/null)
+    total_ram_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+
+    # Recommend swap based on RAM
+    if [[ $total_ram_mb -le 2048 ]]; then
+        recommended_swap=$((total_ram_mb * 2))  # 2x RAM for low memory
+    elif [[ $total_ram_mb -le 8192 ]]; then
+        recommended_swap=$total_ram_mb          # Equal to RAM
+    else
+        recommended_swap=8192                    # Cap at 8GB for high RAM
+    fi
+
+    if [[ -n "$current_swap" ]]; then
+        swap_file=$(echo "$current_swap" | awk '{print $1}')
+        swap_size_mb=$(echo "$current_swap" | awk '{print $3}' | numfmt --from=iec --to-unit=1M 2>/dev/null || echo "unknown")
+
+        printf "  ${WHITE}Current swap:${NC}     %s\n" "$swap_file"
+        printf "  ${WHITE}Swap size:${NC}        %s MB\n" "$swap_size_mb"
+        printf "  ${WHITE}Total RAM:${NC}        %s MB\n" "$total_ram_mb"
+        printf "  ${WHITE}Recommended:${NC}      %s MB\n" "$recommended_swap"
+        printf "\n"
+
+        printf "${CYAN}Swap options:${NC}\n"
+        printf "  1) Keep current swap\n"
+        printf "  2) Resize swap (enter custom size)\n"
+        printf "  3) Remove swap entirely\n"
+        printf "\n"
+
+        local swap_choice
+        read -p "Select option [1-3, default=1]: " swap_choice
+        swap_choice="${swap_choice:-1}"
+
+        case "$swap_choice" in
+            2)
+                local new_size
+                read -p "Enter new swap size in MB (e.g., 512, 1024, 2048): " new_size
+                if [[ "$new_size" =~ ^[0-9]+$ ]] && [[ "$new_size" -ge 128 ]]; then
+                    log_info "Resizing swap to ${new_size}MB..."
+                    run_cmd "swapoff $swap_file"
+                    run_cmd "rm -f $swap_file"
+                    run_with_spinner "Creating ${new_size}MB swap file" "fallocate -l ${new_size}M $swap_file || dd if=/dev/zero of=$swap_file bs=1M count=$new_size status=none"
+                    run_cmd "chmod 600 $swap_file"
+                    run_cmd "mkswap $swap_file"
+                    run_cmd "swapon $swap_file"
+                    record_change "Resized swap to ${new_size}MB"
+                    log_success "Swap resized to ${new_size}MB"
+                else
+                    log_error "Invalid size. Keeping current swap."
+                fi
+                ;;
+            3)
+                if confirm "Remove swap entirely? (Not recommended for systems with <4GB RAM)"; then
+                    log_info "Removing swap..."
+                    run_cmd "swapoff $swap_file"
+                    run_cmd "rm -f $swap_file"
+                    # Remove from fstab
+                    sed -i "\|$swap_file|d" /etc/fstab
+                    record_change "Removed swap file"
+                    log_success "Swap removed"
+                fi
+                ;;
+            *)
+                log_info "Keeping current swap configuration"
+                ;;
+        esac
+    else
+        printf "  ${YELLOW}No swap configured${NC}\n"
+        printf "  ${WHITE}Total RAM:${NC}        %s MB\n" "$total_ram_mb"
+        printf "  ${WHITE}Recommended:${NC}      %s MB\n" "$recommended_swap"
+        printf "\n"
+
+        if confirm "Create a swap file?"; then
+            local new_size
+            read -p "Enter swap size in MB [default=$recommended_swap]: " new_size
+            new_size="${new_size:-$recommended_swap}"
+
+            if [[ "$new_size" =~ ^[0-9]+$ ]] && [[ "$new_size" -ge 128 ]]; then
+                local swap_path="/swap.img"
+                log_info "Creating ${new_size}MB swap file..."
+                run_with_spinner "Creating swap file" "fallocate -l ${new_size}M $swap_path || dd if=/dev/zero of=$swap_path bs=1M count=$new_size status=none"
+                run_cmd "chmod 600 $swap_path"
+                run_cmd "mkswap $swap_path"
+                run_cmd "swapon $swap_path"
+                # Add to fstab if not present
+                if ! grep -q "$swap_path" /etc/fstab; then
+                    echo "$swap_path none swap sw 0 0" >> /etc/fstab
+                fi
+                record_change "Created ${new_size}MB swap file"
+                log_success "Swap file created: $swap_path (${new_size}MB)"
+            else
+                log_error "Invalid size"
+            fi
+        fi
+    fi
+
     print_module_complete "Disk Management"
     MODULE_STATUS["disk"]="complete"
 
