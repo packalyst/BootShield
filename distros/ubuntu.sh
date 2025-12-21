@@ -2721,13 +2721,15 @@ module_disk() {
         printf "\n"
 
         local swap_choice
-        read -p "Select option [1-3, default=1]: " swap_choice
+        printf "${YELLOW}>${NC} Select option [1-3, default=1]: "
+        read -r swap_choice </dev/tty
         swap_choice="${swap_choice:-1}"
 
         case "$swap_choice" in
             2)
                 local new_size
-                read -p "Enter new swap size in MB (e.g., 512, 1024, 2048): " new_size
+                printf "${YELLOW}>${NC} Enter new swap size in MB (e.g., 512, 1024, 2048): "
+                read -r new_size </dev/tty
                 if [[ "$new_size" =~ ^[0-9]+$ ]] && [[ "$new_size" -ge 128 ]]; then
                     log_info "Resizing swap to ${new_size}MB..."
                     run_cmd "swapoff $swap_file"
@@ -2765,7 +2767,8 @@ module_disk() {
 
         if confirm "Create a swap file?"; then
             local new_size
-            read -p "Enter swap size in MB [default=$recommended_swap]: " new_size
+            printf "${YELLOW}>${NC} Enter swap size in MB [default=$recommended_swap]: "
+            read -r new_size </dev/tty
             new_size="${new_size:-$recommended_swap}"
 
             if [[ "$new_size" =~ ^[0-9]+$ ]] && [[ "$new_size" -ge 128 ]]; then
