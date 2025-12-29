@@ -2950,15 +2950,49 @@ module_datetime() {
         fi
     fi
 
-    # Enable NTP
-    if [[ "$current_ntp" != "yes" ]]; then
-        if confirm "Enable NTP time synchronization?"; then
+    # Time synchronization options
+    print_subsection "Time Synchronization"
+    printf "${CYAN}Options:${NC}\n"
+    printf "  ${WHITE}[1]${NC} Enable NTP and sync now (automatic)\n"
+    printf "  ${WHITE}[2]${NC} Disable NTP (manual time management)\n"
+    printf "  ${WHITE}[3]${NC} Skip (keep current settings)\n"
+    printf "\n"
+
+    printf "${YELLOW}>${NC} Select option [1-3]: "
+    read -r time_choice </dev/tty
+
+    case "$time_choice" in
+        1)
+            # Install ntpdate if not present for immediate sync
+            if ! command -v ntpdate &>/dev/null; then
+                run_with_spinner "Installing ntpdate" "apt-get install -y ntpdate"
+            fi
+            # Disable NTP temporarily to allow manual sync
+            timedatectl set-ntp false 2>/dev/null
+            # Force immediate time sync from NTP server
+            if ntpdate -u pool.ntp.org &>/dev/null; then
+                log_success "Time synchronized from pool.ntp.org"
+            elif ntpdate -u time.google.com &>/dev/null; then
+                log_success "Time synchronized from time.google.com"
+            else
+                log_warning "Could not sync time from NTP servers"
+            fi
+            # Re-enable NTP for ongoing sync
             timedatectl set-ntp true
+            systemctl restart systemd-timesyncd 2>/dev/null || true
             log_success "NTP synchronization enabled"
-        fi
-    else
-        log_info "NTP synchronization already enabled"
-    fi
+            ;;
+        2)
+            timedatectl set-ntp false
+            log_success "NTP synchronization disabled"
+            ;;
+        3|"")
+            log_info "Keeping current time settings"
+            ;;
+        *)
+            log_warning "Invalid option, keeping current settings"
+            ;;
+    esac
 
     # Show updated settings
     print_subsection "Updated Settings"

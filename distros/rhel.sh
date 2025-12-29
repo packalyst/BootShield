@@ -2841,20 +2841,49 @@ module_datetime() {
         fi
     fi
 
-    # Enable NTP (chrony on RHEL)
-    if [[ "$current_ntp" != "yes" ]]; then
-        if confirm "Enable NTP time synchronization?"; then
-            if systemctl is-enabled chronyd &>/dev/null; then
-                systemctl enable --now chronyd
-                log_success "Chrony NTP synchronization enabled"
+    # Time synchronization options
+    print_subsection "Time Synchronization"
+    printf "${CYAN}Options:${NC}\n"
+    printf "  ${WHITE}[1]${NC} Enable NTP and sync now (automatic)\n"
+    printf "  ${WHITE}[2]${NC} Disable NTP (manual time management)\n"
+    printf "  ${WHITE}[3]${NC} Skip (keep current settings)\n"
+    printf "\n"
+
+    printf "${YELLOW}>${NC} Select option [1-3]: "
+    read -r time_choice </dev/tty
+
+    case "$time_choice" in
+        1)
+            # RHEL uses chronyd for NTP
+            if systemctl list-unit-files chronyd.service &>/dev/null; then
+                systemctl enable --now chronyd 2>/dev/null
+                # Force immediate sync with chrony
+                chronyc -a makestep &>/dev/null || true
+                log_success "Chrony NTP enabled and time synchronized"
             else
+                # Fallback to timedatectl
+                timedatectl set-ntp false 2>/dev/null
                 timedatectl set-ntp true
                 log_success "NTP synchronization enabled"
             fi
-        fi
-    else
-        log_info "NTP synchronization already enabled"
-    fi
+            ;;
+        2)
+            if systemctl is-active chronyd &>/dev/null; then
+                systemctl stop chronyd
+                systemctl disable chronyd
+                log_success "Chrony NTP synchronization disabled"
+            else
+                timedatectl set-ntp false
+                log_success "NTP synchronization disabled"
+            fi
+            ;;
+        3|"")
+            log_info "Keeping current time settings"
+            ;;
+        *)
+            log_warning "Invalid option, keeping current settings"
+            ;;
+    esac
 
     # Show updated settings
     print_subsection "Updated Settings"
