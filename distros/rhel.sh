@@ -2,19 +2,19 @@
 
 ################################################################################
 #
-#   ███████╗███████╗██████╗ ██╗   ██╗███████╗██████╗
-#   ██╔════╝██╔════╝██╔══██╗██║   ██║██╔════╝██╔══██╗
-#   ███████╗█████╗  ██████╔╝██║   ██║█████╗  ██████╔╝
-#   ╚════██║██╔══╝  ██╔══██╗╚██╗ ██╔╝██╔══╝  ██╔══██╗
-#   ███████║███████╗██║  ██║ ╚████╔╝ ███████╗██║  ██║
-#   ╚══════╝╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝
+#   ███████+███████+██████+ ██+   ██+███████+██████+
+#   ██+====+██+====+██+==██+██|   ██|██+====+██+==██+
+#   ███████+█████+  ██████++██|   ██|█████+  ██████++
+#   +====██|██+==+  ██+==██++██+ ██++██+==+  ██+==██+
+#   ███████|███████+██|  ██| +████++ ███████+██|  ██|
+#   +======++======++=+  +=+  +===+  +======++=+  +=+
 #
-#   ██╗  ██╗ █████╗ ██████╗ ██████╗ ███████╗███╗   ██╗██╗███╗   ██╗ ██████╗
-#   ██║  ██║██╔══██╗██╔══██╗██╔══██╗██╔════╝████╗  ██║██║████╗  ██║██╔════╝
-#   ███████║███████║██████╔╝██║  ██║█████╗  ██╔██╗ ██║██║██╔██╗ ██║██║  ███╗
-#   ██╔══██║██╔══██║██╔══██╗██║  ██║██╔══╝  ██║╚██╗██║██║██║╚██╗██║██║   ██║
-#   ██║  ██║██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║██║██║ ╚████║╚██████╔╝
-#   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝ ╚═════╝
+#   ██+  ██+ █████+ ██████+ ██████+ ███████+███+   ██+██+███+   ██+ ██████+
+#   ██|  ██|██+==██+██+==██+██+==██+██+====+████+  ██|██|████+  ██|██+====+
+#   ███████|███████|██████++██|  ██|█████+  ██+██+ ██|██|██+██+ ██|██|  ███+
+#   ██+==██|██+==██|██+==██+██|  ██|██+==+  ██|+██+██|██|██|+██+██|██|   ██|
+#   ██|  ██|██|  ██|██|  ██|██████++███████+██| +████|██|██| +████|+██████++
+#   +=+  +=++=+  +=++=+  +=++=====+ +======++=+  +===++=++=+  +===+ +=====+
 #
 #   Bulletproof RHEL/Rocky/Alma Server Setup & Hardening Script
 #   Version: 2.0.0
@@ -164,7 +164,7 @@ show_cursor() { printf '\033[?25h'; }
 
 # Draw a horizontal line
 draw_line() {
-    local char="${1:-─}"
+    local char="${1:--}"
     local width="${2:-$TERM_WIDTH}"
     local color="${3:-$GRAY}"
     printf "${color}"
@@ -181,9 +181,9 @@ draw_box() {
     local box_width=$((text_len + padding * 2 + 2))
 
     printf "${color}"
-    printf "╭%*s╮\n" "$((box_width - 2))" '' | tr ' ' '─'
-    printf "│%*s%s%*s│\n" "$padding" '' "$text" "$padding" ''
-    printf "╰%*s╯\n" "$((box_width - 2))" '' | tr ' ' '─'
+    printf "+%*s+\n" "$((box_width - 2))" '' | tr ' ' '-'
+    printf "|%*s%s%*s|\n" "$padding" '' "$text" "$padding" ''
+    printf "+%*s+\n" "$((box_width - 2))" '' | tr ' ' '-'
     printf "${NC}"
 }
 
@@ -202,23 +202,23 @@ print_banner() {
     clear_screen
     printf "${CYAN}"
     cat << 'EOF'
-    ╔═══════════════════════════════════════════════════════════════════════════╗
-    ║                                                                           ║
-    ║   ███████╗███████╗██████╗ ██╗   ██╗███████╗██████╗                        ║
-    ║   ██╔════╝██╔════╝██╔══██╗██║   ██║██╔════╝██╔══██╗                       ║
-    ║   ███████╗█████╗  ██████╔╝██║   ██║█████╗  ██████╔╝                       ║
-    ║   ╚════██║██╔══╝  ██╔══██╗╚██╗ ██╔╝██╔══╝  ██╔══██╗                       ║
-    ║   ███████║███████╗██║  ██║ ╚████╔╝ ███████╗██║  ██║                       ║
-    ║   ╚══════╝╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝                       ║
-    ║                                                                           ║
-    ║   ██╗  ██╗ █████╗ ██████╗ ██████╗ ███████╗███╗   ██╗██╗███╗   ██╗ ██████╗ ║
-    ║   ██║  ██║██╔══██╗██╔══██╗██╔══██╗██╔════╝████╗  ██║██║████╗  ██║██╔════╝ ║
-    ║   ███████║███████║██████╔╝██║  ██║█████╗  ██╔██╗ ██║██║██╔██╗ ██║██║  ███╗║
-    ║   ██╔══██║██╔══██║██╔══██╗██║  ██║██╔══╝  ██║╚██╗██║██║██║╚██╗██║██║   ██║║
-    ║   ██║  ██║██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║██║██║ ╚████║╚██████╔╝║
-    ║   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ║
-    ║                                                                           ║
-    ╚═══════════════════════════════════════════════════════════════════════════╝
+    +===========================================================================+
+    |                                                                           |
+    |   ███████+███████+██████+ ██+   ██+███████+██████+                        |
+    |   ██+====+██+====+██+==██+██|   ██|██+====+██+==██+                       |
+    |   ███████+█████+  ██████++██|   ██|█████+  ██████++                       |
+    |   +====██|██+==+  ██+==██++██+ ██++██+==+  ██+==██+                       |
+    |   ███████|███████+██|  ██| +████++ ███████+██|  ██|                       |
+    |   +======++======++=+  +=+  +===+  +======++=+  +=+                       |
+    |                                                                           |
+    |   ██+  ██+ █████+ ██████+ ██████+ ███████+███+   ██+██+███+   ██+ ██████+ |
+    |   ██|  ██|██+==██+██+==██+██+==██+██+====+████+  ██|██|████+  ██|██+====+ |
+    |   ███████|███████|██████++██|  ██|█████+  ██+██+ ██|██|██+██+ ██|██|  ███+|
+    |   ██+==██|██+==██|██+==██+██|  ██|██+==+  ██|+██+██|██|██|+██+██|██|   ██||
+    |   ██|  ██|██|  ██|██|  ██|██████++███████+██| +████|██|██| +████|+██████++|
+    |   +=+  +=++=+  +=++=+  +=++=====+ +======++=+  +===++=++=+  +===+ +=====+ |
+    |                                                                           |
+    +===========================================================================+
 EOF
     printf "${NC}\n"
     print_centered "Bulletproof RHEL/Rocky/Alma Server Setup v${SCRIPT_VERSION}" "$WHITE"
@@ -233,20 +233,20 @@ print_section() {
     local step="${3:-}"
 
     printf "\n"
-    draw_line "═" "$TERM_WIDTH" "$CYAN"
+    draw_line "=" "$TERM_WIDTH" "$CYAN"
     if [[ -n "$step" ]]; then
-        printf "${CYAN}║${NC} ${icon} ${WHITE}${BOLD}STEP ${step}/${TOTAL_STEPS}: ${title}${NC}\n"
+        printf "${CYAN}|${NC} ${icon} ${WHITE}${BOLD}STEP ${step}/${TOTAL_STEPS}: ${title}${NC}\n"
     else
-        printf "${CYAN}║${NC} ${icon} ${WHITE}${BOLD}${title}${NC}\n"
+        printf "${CYAN}|${NC} ${icon} ${WHITE}${BOLD}${title}${NC}\n"
     fi
-    draw_line "═" "$TERM_WIDTH" "$CYAN"
+    draw_line "=" "$TERM_WIDTH" "$CYAN"
     printf "\n"
 }
 
 # Print sub-section header
 print_subsection() {
     local title="$1"
-    printf "\n${BLUE}┌─ ${WHITE}${title}${NC}\n"
+    printf "\n${BLUE}+- ${WHITE}${title}${NC}\n"
 }
 
 # Print module completion
@@ -1004,9 +1004,9 @@ module_user_management() {
 
                     printf "\n${BG_RED}${WHITE} IMPORTANT - SAVE THIS PRIVATE KEY ${NC}\n"
                     printf "${RED}This will only be shown once!${NC}\n\n"
-                    draw_line "─" 60 "$YELLOW"
+                    draw_line "-" 60 "$YELLOW"
                     cat "$key_file"
-                    draw_line "─" 60 "$YELLOW"
+                    draw_line "-" 60 "$YELLOW"
                     printf "\n"
 
                     record_change "Generated SSH keypair for user '$target_user'"
@@ -1737,7 +1737,7 @@ module_cleanup() {
     # Remove cloud-init
     print_subsection "Cloud-init Removal"
 
-    if rpm -q cloud-init &>/dev/null; then
+    if command -v cloud-init &>/dev/null; then
         printf "${YELLOW}Found:${NC} cloud-init is installed\n"
         printf "${DIM}Cloud-init is used for initial VM provisioning but is no longer needed${NC}\n\n"
 
@@ -1756,6 +1756,13 @@ module_cleanup() {
 
             # Clean directories
             rm -rf /etc/cloud /var/lib/cloud 2>/dev/null
+
+            # Remove cloud-init SSH config if exists and restart SSH
+            if [[ -f /etc/ssh/sshd_config.d/50-cloud-init.conf ]]; then
+                rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
+                log_info "Removed cloud-init SSH config"
+                run_cmd "systemctl restart sshd"
+            fi
 
             record_change "Removed cloud-init"
             log_success "Cloud-init removed"
@@ -1926,23 +1933,23 @@ fi
 echo ""
 
 # Top border
-printf "${C}╔"
-printf '═%.0s' $(seq 1 $((WIDTH-2)))
-printf "╗${NC}\n"
+printf "${C}+"
+printf '=%.0s' $(seq 1 $((WIDTH-2)))
+printf "+${NC}\n"
 
 # Calculate column widths
 COL1=$((WIDTH / 2 - 2))
 COL2=$((WIDTH - COL1 - 3))
 
 # System | Network header
-printf "${C}║${NC}  ${W}${B}SYSTEM${NC}%-*s${C}│${NC}  ${W}${B}NETWORK${NC}%-*s${C}║${NC}\n" $((COL1 - 8)) "" $((COL2 - 9)) ""
+printf "${C}|${NC}  ${W}${B}SYSTEM${NC}%-*s${C}|${NC}  ${W}${B}NETWORK${NC}%-*s${C}|${NC}\n" $((COL1 - 8)) "" $((COL2 - 9)) ""
 
 # Separator
-printf "${C}╠"
-printf '─%.0s' $(seq 1 $COL1)
-printf "┼"
-printf '─%.0s' $(seq 1 $COL2)
-printf "╣${NC}\n"
+printf "${C}+"
+printf '-%.0s' $(seq 1 $COL1)
+printf "+"
+printf '-%.0s' $(seq 1 $COL2)
+printf "+${NC}\n"
 
 # Collect network interfaces
 NET_INFO=""
@@ -1965,7 +1972,7 @@ if [[ ${#NET_LINES[@]} -ge 1 ]]; then
     IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[0]}"
     net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
 fi
-printf "${C}║${NC}  ${D}OS${NC}        %-*s${C}│${NC}  %-*s${C}║${NC}\n" $((COL1 - 12)) "$OS" $((COL2 - 3)) "$net_line"
+printf "${C}|${NC}  ${D}OS${NC}        %-*s${C}|${NC}  %-*s${C}|${NC}\n" $((COL1 - 12)) "$OS" $((COL2 - 3)) "$net_line"
 
 # Row 2: Kernel | Network 2
 net_line=""
@@ -1973,7 +1980,7 @@ if [[ ${#NET_LINES[@]} -ge 2 ]]; then
     IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[1]}"
     net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
 fi
-printf "${C}║${NC}  ${D}Kernel${NC}    %-*s${C}│${NC}  %-*s${C}║${NC}\n" $((COL1 - 12)) "$KERNEL" $((COL2 - 3)) "$net_line"
+printf "${C}|${NC}  ${D}Kernel${NC}    %-*s${C}|${NC}  %-*s${C}|${NC}\n" $((COL1 - 12)) "$KERNEL" $((COL2 - 3)) "$net_line"
 
 # Row 3: Uptime | Network 3
 net_line=""
@@ -1981,58 +1988,58 @@ if [[ ${#NET_LINES[@]} -ge 3 ]]; then
     IFS='|' read -r n_iface n_ip n_type <<< "${NET_LINES[2]}"
     net_line=$(printf "%-10s %-16s %s" "$n_iface" "$n_ip" "$n_type")
 fi
-printf "${C}║${NC}  ${D}Uptime${NC}    %-*s${C}│${NC}  %-*s${C}║${NC}\n" $((COL1 - 12)) "$UPTIME" $((COL2 - 3)) "$net_line"
+printf "${C}|${NC}  ${D}Uptime${NC}    %-*s${C}|${NC}  %-*s${C}|${NC}\n" $((COL1 - 12)) "$UPTIME" $((COL2 - 3)) "$net_line"
 
 # Separator for resources
-printf "${C}╠"
-printf '═%.0s' $(seq 1 $((WIDTH-2)))
-printf "╣${NC}\n"
+printf "${C}+"
+printf '=%.0s' $(seq 1 $((WIDTH-2)))
+printf "+${NC}\n"
 
 # Resources header
-printf "${C}║${NC}  ${W}${B}RESOURCES${NC}%-*s${C}║${NC}\n" $((WIDTH - 13)) ""
+printf "${C}|${NC}  ${W}${B}RESOURCES${NC}%-*s${C}|${NC}\n" $((WIDTH - 13)) ""
 
 # Separator
-printf "${C}╠"
-printf '─%.0s' $(seq 1 $((WIDTH-2)))
-printf "╣${NC}\n"
+printf "${C}+"
+printf '-%.0s' $(seq 1 $((WIDTH-2)))
+printf "+${NC}\n"
 
 # CPU
 cpu_info=$(printf "%3d%%   %s cores" "$CPU_LOAD" "$CPU_CORES")
-printf "${C}║${NC}  ${D}CPU${NC}       $(progress_bar $CPU_LOAD)  %-*s${C}║${NC}\n" $((WIDTH - 38)) "$cpu_info"
+printf "${C}|${NC}  ${D}CPU${NC}       $(progress_bar $CPU_LOAD)  %-*s${C}|${NC}\n" $((WIDTH - 38)) "$cpu_info"
 
 # Memory
 mem_info=$(printf "%3d%%   %s / %s" "$MEM_PERCENT" "$MEM_USED_FMT" "$MEM_TOTAL_FMT")
-printf "${C}║${NC}  ${D}Memory${NC}    $(progress_bar $MEM_PERCENT)  %-*s${C}║${NC}\n" $((WIDTH - 38)) "$mem_info"
+printf "${C}|${NC}  ${D}Memory${NC}    $(progress_bar $MEM_PERCENT)  %-*s${C}|${NC}\n" $((WIDTH - 38)) "$mem_info"
 
 # Disk
 disk_info=$(printf "%3d%%   %sGB / %sGB" "$DISK_PERCENT" "$DISK_USED" "$DISK_TOTAL")
-printf "${C}║${NC}  ${D}Disk${NC}      $(progress_bar $DISK_PERCENT)  %-*s${C}║${NC}\n" $((WIDTH - 38)) "$disk_info"
+printf "${C}|${NC}  ${D}Disk${NC}      $(progress_bar $DISK_PERCENT)  %-*s${C}|${NC}\n" $((WIDTH - 38)) "$disk_info"
 
 # Swap
 if [[ "$SWAP_TOTAL_FMT" != "N/A" ]]; then
     swap_info=$(printf "%3d%%   %s / %s" "$SWAP_PERCENT" "$SWAP_USED_FMT" "$SWAP_TOTAL_FMT")
-    printf "${C}║${NC}  ${D}Swap${NC}      $(progress_bar $SWAP_PERCENT)  %-*s${C}║${NC}\n" $((WIDTH - 38)) "$swap_info"
+    printf "${C}|${NC}  ${D}Swap${NC}      $(progress_bar $SWAP_PERCENT)  %-*s${C}|${NC}\n" $((WIDTH - 38)) "$swap_info"
 fi
 
 # Footer separator
-printf "${C}╠"
-printf '─%.0s' $(seq 1 $((WIDTH-2)))
-printf "╣${NC}\n"
+printf "${C}+"
+printf '-%.0s' $(seq 1 $((WIDTH-2)))
+printf "+${NC}\n"
 
 # Footer: Last login | Updates
 if [[ "$UPDATES" -gt 0 ]]; then
     footer_left=$(printf "Last login: %s" "$LAST_LOGIN")
     footer_right=$(printf "%s updates available" "$UPDATES")
     padding=$((WIDTH - 6 - ${#footer_left} - ${#footer_right}))
-    printf "${C}║${NC}  ${D}%s${NC}%*s${Y}%s${NC}  ${C}║${NC}\n" "$footer_left" "$padding" "" "$footer_right"
+    printf "${C}|${NC}  ${D}%s${NC}%*s${Y}%s${NC}  ${C}|${NC}\n" "$footer_left" "$padding" "" "$footer_right"
 else
-    printf "${C}║${NC}  ${D}Last login:${NC} %-*s${C}║${NC}\n" $((WIDTH - 17)) "$LAST_LOGIN"
+    printf "${C}|${NC}  ${D}Last login:${NC} %-*s${C}|${NC}\n" $((WIDTH - 17)) "$LAST_LOGIN"
 fi
 
 # Bottom border
-printf "${C}╚"
-printf '═%.0s' $(seq 1 $((WIDTH-2)))
-printf "╝${NC}\n"
+printf "${C}+"
+printf '=%.0s' $(seq 1 $((WIDTH-2)))
+printf "+${NC}\n"
 
 echo ""
 MOTDEOF
@@ -2988,7 +2995,7 @@ module_post_setup() {
 
     # Reboot prompt
     printf "\n"
-    draw_line "─" "$TERM_WIDTH" "$CYAN"
+    draw_line "-" "$TERM_WIDTH" "$CYAN"
 
     if confirm "Reboot system now? (recommended if kernel was updated)"; then
         printf "\n${YELLOW}System will reboot in 5 seconds...${NC}\n"
@@ -3008,32 +3015,32 @@ module_post_setup() {
 show_main_menu() {
     print_banner
 
-    printf "${CYAN}╔═══════════════════════════════════════════════════════════════════════════╗${NC}\n"
-    printf "${CYAN}║${NC}                           ${WHITE}${BOLD}MAIN MENU${NC}                                       ${CYAN}║${NC}\n"
-    printf "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}\n"
-    printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[1]${NC} ${SYM_ROCKET} ${GREEN}Quick Setup${NC} - Run all modules interactively                   ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[2]${NC} ${SYM_USER} User Management                                                ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[3]${NC} ${SYM_KEY} SSH Hardening                                                  ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[4]${NC} ${SYM_SHIELD} Firewall (firewalld)                                           ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[5]${NC} ${SYM_LOCK} Fail2ban                                                       ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[6]${NC} ${SYM_SHIELD} SELinux                                                        ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[7]${NC} ${SYM_FOLDER} System Cleanup                                                 ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[8]${NC} ${SYM_GEAR} Software Installation                                          ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[9]${NC} ${SYM_SHIELD} Kernel Hardening                                               ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[10]${NC} ${SYM_CLOCK} Automatic Updates                                              ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[11]${NC} ${SYM_LOCK} Additional Security                                            ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[12]${NC} ${SYM_DISK} Disk Management                                                ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[13]${NC} ${SYM_CLOCK} Date & Timezone                                                ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[14]${NC} ${SYM_ROCKET} System Update                                                  ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[15]${NC} ${SYM_INFO} System Status                                                  ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}  ${WHITE}[16]${NC} ${SYM_STAR} Security Audit (lynis)                                        ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}   ${WHITE}[0]${NC} ${RED}Exit${NC}                                                             ${CYAN}║${NC}\n"
-    printf "${CYAN}║${NC}                                                                           ${CYAN}║${NC}\n"
-    printf "${CYAN}╚═══════════════════════════════════════════════════════════════════════════╝${NC}\n"
+    printf "${CYAN}+===========================================================================+${NC}\n"
+    printf "${CYAN}|${NC}                           ${WHITE}${BOLD}MAIN MENU${NC}                                       ${CYAN}|${NC}\n"
+    printf "${CYAN}+===========================================================================+${NC}\n"
+    printf "${CYAN}|${NC}                                                                           ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[1]${NC} ${SYM_ROCKET} ${GREEN}Quick Setup${NC} - Run all modules interactively                   ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}                                                                           ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[2]${NC} ${SYM_USER} User Management                                                ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[3]${NC} ${SYM_KEY} SSH Hardening                                                  ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[4]${NC} ${SYM_SHIELD} Firewall (firewalld)                                           ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[5]${NC} ${SYM_LOCK} Fail2ban                                                       ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[6]${NC} ${SYM_SHIELD} SELinux                                                        ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[7]${NC} ${SYM_FOLDER} System Cleanup                                                 ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[8]${NC} ${SYM_GEAR} Software Installation                                          ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[9]${NC} ${SYM_SHIELD} Kernel Hardening                                               ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[10]${NC} ${SYM_CLOCK} Automatic Updates                                              ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[11]${NC} ${SYM_LOCK} Additional Security                                            ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[12]${NC} ${SYM_DISK} Disk Management                                                ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[13]${NC} ${SYM_CLOCK} Date & Timezone                                                ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[14]${NC} ${SYM_ROCKET} System Update                                                  ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}                                                                           ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[15]${NC} ${SYM_INFO} System Status                                                  ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[16]${NC} ${SYM_STAR} Security Audit (lynis)                                        ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}                                                                           ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[0]${NC} ${RED}Exit${NC}                                                             ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}                                                                           ${CYAN}|${NC}\n"
+    printf "${CYAN}+===========================================================================+${NC}\n"
     printf "\n"
 }
 
