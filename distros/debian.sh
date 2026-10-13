@@ -128,6 +128,12 @@ TOTAL_STEPS=13
 DRY_RUN=false
 SKIP_CONFIRMATIONS=false
 
+# Unattended mode (driven by a --config file; see load_config)
+UNATTENDED=false
+CONFIG_FILE=""
+CHOICE_KEY=""
+declare -A ANSWERS
+
 # =============================================================================
 # UI HELPER FUNCTIONS
 # =============================================================================
@@ -372,6 +378,18 @@ print_status() {
 confirm() {
     local prompt="$1"
     local default="${2:-n}"
+    local key="${3:-}"
+
+    if [[ "$UNATTENDED" == true ]]; then
+        local ans="${ANSWERS[$key]:-}"
+        if [[ -n "$key" && -n "$ans" ]]; then
+            case "${ans,,}" in
+                y|yes|true|1) return 0 ;;
+                *) return 1 ;;
+            esac
+        fi
+        [[ "$default" == "y" ]] && return 0 || return 1
+    fi
 
     if [[ "$SKIP_CONFIRMATIONS" == true ]]; then
         [[ "$default" == "y" ]] && return 0 || return 1
@@ -403,6 +421,13 @@ ask_input() {
     local default="${2:-}"
     local is_secret="${3:-false}"
     local validation="${4:-}"
+    local key="${5:-}"
+
+    if [[ "$UNATTENDED" == true ]]; then
+        local ans="${ANSWERS[$key]:-}"
+        echo "${ans:-$default}"
+        return 0
+    fi
 
     local display_default=""
     if [[ -n "$default" ]] && [[ "$is_secret" != true ]]; then
@@ -438,6 +463,13 @@ ask_choice() {
     local prompt="$1"
     shift
     local options=("$@")
+
+    if [[ "$UNATTENDED" == true ]]; then
+        local ans="${ANSWERS[${CHOICE_KEY:-}]:-}"
+        CHOICE_KEY=""
+        if [[ -n "$ans" ]]; then echo "$ans"; else echo "${options[0]}"; fi
+        return 0
+    fi
 
     printf "${YELLOW}?${NC} ${prompt}\n" >/dev/tty
 
@@ -537,6 +569,30 @@ validate_not_empty() {
     fi
     printf "${RED}  Value cannot be empty${NC}\n" >/dev/tty
     return 1
+}
+
+# =============================================================================
+# CONFIG FILE LOADING (unattended mode)
+# =============================================================================
+
+load_config() {
+    local file="$1"
+    [[ -f "$file" ]] || { printf "${RED}Config file not found: %s${NC}\n" "$file"; exit 1; }
+
+    local line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$line" != *"="* ]] && continue
+
+        key="${line%%=*}"
+        value="${line#*=}"
+        key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"; value="${value%"${value##*[![:space:]]}"}"
+        if [[ "$value" == \"*\" && ${#value} -ge 2 ]]; then value="${value:1:-1}"; fi
+
+        ANSWERS["$key"]="$value"
+    done < "$file"
 }
 
 # =============================================================================
@@ -836,7 +892,7 @@ module_preflight() {
     print_status "SSH Port" "$CURRENT_SSH_PORT"
     print_status "SSH Password Auth" "$SSH_PASSWORD_AUTH" $([ "$SSH_PASSWORD_AUTH" == "disabled" ] && echo "success" || echo "warning")
     print_status "SSH Root Login" "$SSH_ROOT_LOGIN" $([ "$SSH_ROOT_LOGIN" == "disabled" ] && echo "success" || echo "warning")
-    print_status "Firewall (UFW)" "$UFW_STATUS" $([ "$UFW_STATUS" == "active" ] && echo "success" || echo "warning")
+    print_status "Firewall (nftables)" "$UFW_STATUS" $([ "$UFW_STATUS" == "active" ] && echo "success" || echo "warning")
 
     if [[ -n "$SUDO_USERS" ]]; then
         print_status "Sudo Users" "$(echo $SUDO_USERS | tr '\n' ', ')"
@@ -886,7 +942,7 @@ module_user_management() {
     print_section "USER MANAGEMENT" "$SYM_USER" "2"
     CURRENT_MODULE="User Management"
 
-    if ! confirm "Configure user management?"; then
+    if ! confirm "Configure user management?" "n" "CONFIGURE_USERS"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["user_management"]="skipped"
         return 0
@@ -905,19 +961,19 @@ module_user_management() {
     fi
 
     # Option to create new user
-    if confirm "Create a new admin user?"; then
+    if confirm "Create a new admin user?" "n" "CREATE_USER"; then
         local new_username
-        new_username=$(ask_input "Enter username for new admin user" "" false validate_username)
+        new_username=$(ask_input "Enter username for new admin user" "" false validate_username "NEW_USERNAME")
 
         if id "$new_username" &>/dev/null; then
             log_warning "User '$new_username' already exists"
-            if confirm "Add existing user '$new_username' to sudo group?"; then
+            if confirm "Add existing user '$new_username' to sudo group?" "y" "ADD_SUDO"; then
                 run_cmd "usermod -aG sudo '$new_username'"
                 record_change "Added user '$new_username' to sudo group"
                 log_success "User '$new_username' added to sudo group"
             fi
         else
-            if confirm "Create user '$new_username' with sudo privileges?"; then
+            if confirm "Create user '$new_username' with sudo privileges?" "y" "CREATE_SUDO_USER"; then
                 run_cmd "adduser --gecos '' '$new_username'"
                 run_cmd "usermod -aG sudo '$new_username'"
                 record_change "Created user '$new_username' with sudo privileges"
@@ -929,14 +985,14 @@ module_user_management() {
     # SSH Key setup
     print_subsection "SSH Key Authentication"
 
-    if confirm "Setup SSH key authentication for a user?"; then
+    if confirm "Setup SSH key authentication for a user?" "n" "SETUP_SSH_KEY"; then
         # Get list of users
         local users_list
         users_list=$(awk -F: '$3 >= 1000 && $3 < 65534 {print $1}' /etc/passwd | tr '\n' ' ')
 
         printf "${CYAN}Available users:${NC} $users_list\n"
         local target_user
-        target_user=$(ask_input "Enter username to configure SSH key for" "$REAL_USER" false validate_not_empty)
+        target_user=$(ask_input "Enter username to configure SSH key for" "$REAL_USER" false validate_not_empty "SSH_KEY_USER")
 
         if ! id "$target_user" &>/dev/null; then
             log_error "User '$target_user' does not exist"
@@ -954,6 +1010,7 @@ module_user_management() {
             fi
 
             local key_choice
+            CHOICE_KEY="SSH_KEY_METHOD"
             key_choice=$(ask_choice "How would you like to add SSH key?" \
                 "Paste existing public key" \
                 "Generate new keypair" \
@@ -961,8 +1018,12 @@ module_user_management() {
 
             case "$key_choice" in
                 "Paste existing public key")
-                    printf "${CYAN}Paste your public key (ssh-rsa ... or ssh-ed25519 ...):${NC}\n"
-                    read -r pub_key
+                    if [[ "$UNATTENDED" == true ]]; then
+                        pub_key="${ANSWERS[SSH_PUBKEY]:-}"
+                    else
+                        printf "${CYAN}Paste your public key (ssh-rsa ... or ssh-ed25519 ...):${NC}\n"
+                        read -r pub_key
+                    fi
 
                     if [[ "$pub_key" =~ ^ssh-(rsa|ed25519|ecdsa) ]]; then
                         echo "$pub_key" >> "$auth_keys"
@@ -1026,7 +1087,7 @@ module_user_management() {
     sudo_count=$(grep -Po '^sudo.+:\K.*$' /etc/group 2>/dev/null | tr ',' '\n' | wc -l)
 
     if [[ $sudo_count -gt 0 ]]; then
-        if confirm "Lock root password? (sudo users can still use 'sudo -i')"; then
+        if confirm "Lock root password? (sudo users can still use 'sudo -i')" "n" "LOCK_ROOT"; then
             run_cmd "passwd -l root"
             record_change "Locked root password"
             log_success "Root password locked"
@@ -1049,7 +1110,7 @@ module_ssh_hardening() {
     print_section "SSH HARDENING" "$SYM_KEY" "3"
     CURRENT_MODULE="SSH Hardening"
 
-    if ! confirm "Configure SSH hardening?"; then
+    if ! confirm "Configure SSH hardening?" "n" "SSH_HARDENING"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["ssh_hardening"]="skipped"
         return 0
@@ -1065,9 +1126,9 @@ module_ssh_hardening() {
     print_subsection "SSH Port Configuration"
     printf "${CYAN}Current SSH port:${NC} $CURRENT_SSH_PORT\n"
 
-    if confirm "Change SSH port?"; then
+    if confirm "Change SSH port?" "n" "CHANGE_SSH_PORT"; then
         local new_port
-        new_port=$(ask_input "Enter new SSH port" "2222" false validate_port)
+        new_port=$(ask_input "Enter new SSH port" "2222" false validate_port "SSH_PORT")
 
         if [[ "$new_port" != "$CURRENT_SSH_PORT" ]]; then
             changes_pending+=("Port $new_port")
@@ -1085,7 +1146,7 @@ module_ssh_hardening() {
         printf "  ${SYM_BULLET} Test key login in another terminal first\n"
         printf "\n"
 
-        if confirm "Disable password authentication? (SSH keys only)"; then
+        if confirm "Disable password authentication? (SSH keys only)" "n" "DISABLE_PASSWORD_AUTH"; then
             changes_pending+=("PasswordAuthentication no")
         fi
     else
@@ -1097,7 +1158,7 @@ module_ssh_hardening() {
     printf "${CYAN}Current root login:${NC} $SSH_ROOT_LOGIN\n"
 
     if [[ "$SSH_ROOT_LOGIN" == "enabled" ]]; then
-        if confirm "Disable SSH root login?"; then
+        if confirm "Disable SSH root login?" "n" "DISABLE_ROOT_LOGIN"; then
             changes_pending+=("PermitRootLogin no")
         fi
     else
@@ -1107,7 +1168,7 @@ module_ssh_hardening() {
     # Additional hardening
     print_subsection "Additional SSH Hardening"
 
-    if confirm "Apply additional SSH hardening settings?"; then
+    if confirm "Apply additional SSH hardening settings?" "n" "SSH_EXTRA_HARDENING"; then
         local hardening_options=(
             "MaxAuthTries 3"
             "ClientAliveInterval 300"
@@ -1129,10 +1190,10 @@ module_ssh_hardening() {
     fi
 
     # AllowUsers
-    if confirm "Configure AllowUsers whitelist?"; then
+    if confirm "Configure AllowUsers whitelist?" "n" "SSH_ALLOWUSERS"; then
         printf "${CYAN}Enter usernames allowed to SSH (space-separated):${NC}\n"
         local allowed_users
-        allowed_users=$(ask_input "Users" "$REAL_USER" false validate_not_empty)
+        allowed_users=$(ask_input "Users" "$REAL_USER" false validate_not_empty "SSH_ALLOW_USERS_LIST")
         changes_pending+=("AllowUsers $allowed_users")
     fi
 
@@ -1145,7 +1206,7 @@ module_ssh_hardening() {
         done
         printf "\n"
 
-        if confirm "Apply these SSH changes?"; then
+        if confirm "Apply these SSH changes?" "y" "APPLY_SSH"; then
             # Apply each setting - update in place or add if missing
             for setting in "${changes_pending[@]}"; do
                 local key=$(echo "$setting" | cut -d' ' -f1)
@@ -1189,7 +1250,7 @@ module_ssh_hardening() {
                     fi
                 fi
 
-                if confirm "Reload SSH service now?"; then
+                if confirm "Reload SSH service now?" "y" "RELOAD_SSH"; then
                     reload_ssh
                     record_change "SSH hardening applied"
                     log_success "SSH service reloaded"
@@ -1218,175 +1279,429 @@ module_ssh_hardening() {
 }
 
 # =============================================================================
-# MODULE: FIREWALL (UFW)
+# MODULE: FIREWALL (nftables)
 # =============================================================================
 
+fw_install_cloudflare_refresh() {
+    # Installs a refresher that pulls Cloudflare's published ranges into an
+    # nftables include file, plus a weekly systemd timer. Runs it once now.
+    mkdir -p /etc/nftables.d
+
+    cat > /usr/local/sbin/cf-refresh.sh <<'CFEOF'
+#!/bin/bash
+# Refresh Cloudflare IP ranges into an nftables set include, then reload.
+set -euo pipefail
+OUT="/etc/nftables.d/cloudflare.nft"
+TMP="$(mktemp)"
+v4="$(curl -fsSL https://www.cloudflare.com/ips-v4 || true)"
+v6="$(curl -fsSL https://www.cloudflare.com/ips-v6 || true)"
+if [[ -z "$v4" ]]; then
+    # Fallback to the published ranges if offline (as of 2024).
+    v4="173.245.48.0/20
+103.21.244.0/22
+103.22.200.0/22
+103.31.4.0/22
+141.101.64.0/18
+108.162.192.0/18
+190.93.240.0/20
+188.114.96.0/20
+197.234.240.0/22
+198.41.128.0/17
+162.158.0.0/15
+104.16.0.0/13
+104.24.0.0/14
+172.64.0.0/13
+131.0.72.0/22"
+fi
+{
+    echo "# Generated by cf-refresh.sh on $(date -u +%FT%TZ)"
+    echo "define cf_v4 = { $(echo "$v4" | paste -sd, -) }"
+    if [[ -n "$v6" ]]; then
+        echo "define cf_v6 = { $(echo "$v6" | paste -sd, -) }"
+    else
+        echo "define cf_v6 = { 2400:cb00::/32, 2606:4700::/32, 2803:f800::/32, 2405:b500::/32, 2405:8100::/32, 2a06:98c0::/29, 2c0f:f248::/32 }"
+    fi
+} > "$TMP"
+mv "$TMP" "$OUT"
+chmod 644 "$OUT"
+# Reload only if the main ruleset references the file (i.e. firewall is active).
+if systemctl is-active --quiet nftables; then
+    systemctl reload nftables || nft -f /etc/nftables.conf || true
+fi
+CFEOF
+    chmod 750 /usr/local/sbin/cf-refresh.sh
+
+    cat > /etc/systemd/system/cf-refresh.service <<'CFEOF'
+[Unit]
+Description=Refresh Cloudflare IP ranges for nftables
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cf-refresh.sh
+CFEOF
+
+    cat > /etc/systemd/system/cf-refresh.timer <<'CFEOF'
+[Unit]
+Description=Weekly Cloudflare IP range refresh
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+CFEOF
+
+    systemctl daemon-reload
+    systemctl enable --now cf-refresh.timer >/dev/null 2>&1 || true
+    /usr/local/sbin/cf-refresh.sh || log_warning "Cloudflare range fetch failed; using fallback ranges"
+    log_success "Cloudflare IP refresh installed (weekly timer)"
+}
+
+fw_install_docker_user() {
+    # Docker manages its own DOCKER-USER chain (iptables-nft). Re-apply source
+    # restrictions to container-published 80/443 after the Docker daemon starts.
+    local web_from="$1"
+    [[ "$web_from" != "cloudflare" ]] && return 0
+    command -v iptables &>/dev/null || return 0
+
+    cat > /usr/local/sbin/docker-user-rules.sh <<'DUEOF'
+#!/bin/bash
+# Restrict container-published 80/443 to Cloudflare ranges via DOCKER-USER.
+set -uo pipefail
+iptables -N DOCKER-USER 2>/dev/null || true
+# Flush our managed rules (idempotent) by rebuilding DOCKER-USER tail.
+iptables -F DOCKER-USER
+ipset_v4="$(curl -fsSL https://www.cloudflare.com/ips-v4 2>/dev/null)"
+for cidr in $ipset_v4; do
+    iptables -A DOCKER-USER -p tcp -m multiport --dports 80,443 -s "$cidr" -j RETURN
+done
+# Anything else hitting 80/443 on containers is dropped; non-web traffic returns.
+iptables -A DOCKER-USER -p tcp -m multiport --dports 80,443 -j DROP
+iptables -A DOCKER-USER -j RETURN
+DUEOF
+    chmod 750 /usr/local/sbin/docker-user-rules.sh
+
+    cat > /etc/systemd/system/docker-user-rules.service <<'DUEOF'
+[Unit]
+Description=Apply DOCKER-USER firewall rules (Cloudflare-only web)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/docker-user-rules.sh
+
+[Install]
+WantedBy=multi-user.target
+DUEOF
+    systemctl daemon-reload
+    systemctl enable --now docker-user-rules.service >/dev/null 2>&1 || true
+    log_success "DOCKER-USER rules installed (container web restricted to Cloudflare)"
+}
+
 module_firewall() {
-    print_section "FIREWALL CONFIGURATION" "$SYM_SHIELD" "4"
+    print_section "FIREWALL CONFIGURATION (nftables)" "$SYM_SHIELD" "4"
     CURRENT_MODULE="Firewall"
 
-    if ! confirm "Configure firewall (UFW)?"; then
+    if ! confirm "Configure firewall (nftables)?" "y" "FIREWALL_ENABLE"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["firewall"]="skipped"
         return 0
     fi
 
-    # Install UFW if needed
-    if [[ "$UFW_INSTALLED" != true ]]; then
-        if confirm "UFW is not installed. Install it?"; then
-            run_with_spinner "Installing UFW" "apt-get update && apt-get install -y ufw"
-            UFW_INSTALLED=true
-        else
-            print_module_skipped "$CURRENT_MODULE"
-            MODULE_STATUS["firewall"]="skipped"
-            return 0
+    # Install nftables; stand down UFW if present (they conflict).
+    if ! command -v nft &>/dev/null; then
+        run_with_spinner "Installing nftables" "apt-get update && apt-get install -y nftables"
+    fi
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        if confirm "UFW is active and conflicts with nftables. Disable UFW?" "y" "DISABLE_UFW"; then
+            run_cmd "ufw --force disable"
+            log_info "UFW disabled in favour of nftables"
         fi
     fi
 
-    # Current status
-    print_subsection "Current Firewall Status"
-    printf "${CYAN}UFW Status:${NC} $UFW_STATUS\n\n"
+    backup_file "/etc/nftables.conf" "nftables.conf"
 
-    if [[ "$UFW_STATUS" == "active" ]]; then
-        ufw status numbered 2>/dev/null | head -20
-        printf "\n"
-    fi
-
-    # Reset or configure
-    local configure_mode
-    if [[ "$UFW_STATUS" == "active" ]]; then
-        configure_mode=$(ask_choice "UFW is already active. What would you like to do?" \
-            "Add rules to existing config" \
-            "Reset and reconfigure" \
-            "Skip firewall configuration")
-
-        if [[ "$configure_mode" == "Skip firewall configuration" ]]; then
-            print_module_skipped "$CURRENT_MODULE"
-            MODULE_STATUS["firewall"]="skipped"
-            return 0
-        fi
-
-        if [[ "$configure_mode" == "Reset and reconfigure" ]]; then
-            if confirm "This will reset ALL firewall rules. Continue?"; then
-                run_cmd "ufw --force reset"
-                log_info "Firewall reset"
-            fi
-        fi
-    fi
-
-    # Default policies
-    print_subsection "Default Policies"
-
-    if confirm "Set default policy: deny incoming, allow outgoing?"; then
-        run_cmd "ufw default deny incoming"
-        run_cmd "ufw default allow outgoing"
-        log_success "Default policies set"
-    fi
-
-    # SSH Port (CRITICAL)
-    print_subsection "SSH Access (Required)"
-
-    # Detect current SSH port
+    # --- Gather parameters ---
+    print_subsection "Access Rules"
     local ssh_port
     ssh_port=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
-    ssh_port="${ssh_port:-22}"
+    ssh_port="${ssh_port:-${CURRENT_SSH_PORT:-22}}"
+    ssh_port=$(ask_input "SSH port to allow" "$ssh_port" false validate_port "SSH_PORT")
 
-    printf "${YELLOW}${SYM_WARN} SSH access is required to prevent lockout${NC}\n"
-    printf "${CYAN}Detected SSH port:${NC} $ssh_port\n\n"
+    CHOICE_KEY="SSH_ACCESS"
+    local ssh_access
+    ssh_access=$(ask_choice "SSH reachable from?" "anywhere" "vpn-only")
 
-    local confirm_ssh_port
-    confirm_ssh_port=$(ask_input "Confirm SSH port to allow" "$ssh_port" false validate_port)
+    local wg_subnet wg_port enable_vpn="no"
+    wg_subnet=$(ask_input "WireGuard subnet (for vpn-only SSH)" "10.10.10.0/24" false "" "WG_SUBNET")
+    wg_port=$(ask_input "WireGuard UDP port" "51820" false validate_port "WG_PORT")
+    confirm "Open the WireGuard port (${wg_port}/udp)?" "n" "ENABLE_VPN" && enable_vpn="yes"
 
-    run_cmd "ufw allow ${confirm_ssh_port}/tcp comment 'SSH'"
-    log_success "SSH port $confirm_ssh_port allowed"
-    record_change "Firewall: Allowed SSH port $confirm_ssh_port"
-
-    # Common ports
-    print_subsection "Common Services"
-
-    if confirm "Allow HTTP (port 80)?"; then
-        run_cmd "ufw allow 80/tcp comment 'HTTP'"
-        record_change "Firewall: Allowed HTTP"
-        log_success "HTTP allowed"
+    # Lockout safety: don't lock SSH to the VPN unless wg0 is actually up.
+    if [[ "$ssh_access" == "vpn-only" ]] && ! ip link show wg0 &>/dev/null; then
+        log_warning "vpn-only SSH requested but wg0 is not up — keeping SSH open to avoid lockout."
+        log_warning "Re-run the firewall module once WireGuard is connected to lock SSH to the VPN."
+        ssh_access="anywhere"
     fi
 
-    if confirm "Allow HTTPS (port 443)?"; then
-        run_cmd "ufw allow 443/tcp comment 'HTTPS'"
-        record_change "Firewall: Allowed HTTPS"
-        log_success "HTTPS allowed"
+    CHOICE_KEY="WEB_ALLOW_FROM"
+    local web_from
+    web_from=$(ask_choice "HTTP/HTTPS (80,443) reachable from?" "anywhere" "cloudflare" "none")
+
+    local open_mail="no"
+    confirm "Open mail ports (25,465,587,993)?" "n" "MAIL_PORTS" && open_mail="yes"
+
+    local extra_tcp extra_udp
+    extra_tcp=$(ask_input "Extra TCP ports (comma-separated, blank=none)" "" false "" "EXTRA_TCP_PORTS")
+    extra_udp=$(ask_input "Extra UDP ports (comma-separated, blank=none)" "" false "" "EXTRA_UDP_PORTS")
+
+    # --- Cloudflare set (if used by host rules) ---
+    local cf_include=""
+    if [[ "$web_from" == "cloudflare" ]]; then
+        fw_install_cloudflare_refresh
+        cf_include='include "/etc/nftables.d/cloudflare.nft"'
     fi
 
-    # Custom ports
-    print_subsection "Custom Ports"
+    # --- Build rule fragments ---
+    local ssh_rule web_rule wg_rule mail_rule extra_rules=""
 
-    if confirm "Add custom port rules?"; then
-        while true; do
-            local port_input
-            port_input=$(ask_input "Enter port (or 'done' to finish)" "done" false)
-
-            if [[ "$port_input" == "done" ]]; then
-                break
-            fi
-
-            if ! validate_port "$port_input"; then
-                continue
-            fi
-
-            local protocol
-            protocol=$(ask_choice "Protocol for port $port_input" "tcp" "udp" "both")
-
-            case "$protocol" in
-                tcp)
-                    run_cmd "ufw allow ${port_input}/tcp"
-                    ;;
-                udp)
-                    run_cmd "ufw allow ${port_input}/udp"
-                    ;;
-                both)
-                    run_cmd "ufw allow ${port_input}"
-                    ;;
-            esac
-
-            record_change "Firewall: Allowed port $port_input/$protocol"
-            log_success "Port $port_input/$protocol allowed"
-        done
+    if [[ "$ssh_access" == "vpn-only" ]]; then
+        ssh_rule="ip saddr ${wg_subnet} tcp dport ${ssh_port} accept"
+    else
+        ssh_rule="tcp dport ${ssh_port} accept"
     fi
 
-    # Rate limiting
-    print_subsection "Rate Limiting"
-
-    if confirm "Enable rate limiting on SSH? (blocks after 6 connections in 30 sec)"; then
-        run_cmd "ufw limit ${confirm_ssh_port}/tcp comment 'SSH rate limit'"
-        record_change "Firewall: SSH rate limiting enabled"
-        log_success "SSH rate limiting enabled"
+    if [[ "$enable_vpn" == "yes" ]]; then
+        wg_rule="udp dport ${wg_port} accept"
+    else
+        wg_rule="# wireguard disabled"
     fi
 
-    # Enable UFW
-    print_subsection "Enable Firewall"
+    case "$web_from" in
+        anywhere)   web_rule="tcp dport { 80, 443 } accept" ;;
+        cloudflare) web_rule="tcp dport { 80, 443 } ip saddr \$cf_v4 accept
+        tcp dport { 80, 443 } ip6 saddr \$cf_v6 accept" ;;
+        *)          web_rule="# web closed" ;;
+    esac
 
-    printf "\n${CYAN}Rules to be applied:${NC}\n"
-    ufw show added 2>/dev/null || ufw status numbered
-    printf "\n"
+    if [[ "$open_mail" == "yes" ]]; then
+        mail_rule="tcp dport { 25, 465, 587, 993 } accept"
+    else
+        mail_rule="# mail closed"
+    fi
 
-    if confirm "Enable UFW firewall with these rules?"; then
-        # Enable UFW (--force skips the interactive prompt)
-        run_cmd "ufw --force enable"
-        record_change "Firewall enabled"
-        log_success "Firewall enabled"
+    local p
+    if [[ -n "$extra_tcp" ]]; then
+        IFS=',' read -ra _tcp <<< "$extra_tcp"
+        for p in "${_tcp[@]}"; do p="$(echo "$p" | xargs)"; [[ -n "$p" ]] && extra_rules+="        tcp dport ${p} accept"$'\n'; done
+    fi
+    if [[ -n "$extra_udp" ]]; then
+        IFS=',' read -ra _udp <<< "$extra_udp"
+        for p in "${_udp[@]}"; do p="$(echo "$p" | xargs)"; [[ -n "$p" ]] && extra_rules+="        udp dport ${p} accept"$'\n'; done
+    fi
 
-        # Enable logging
-        if confirm "Enable firewall logging?"; then
-            run_cmd "ufw logging on"
-            log_success "Firewall logging enabled"
+    # --- Write ruleset ---
+    cat > /etc/nftables.conf <<NFTEOF
+#!/usr/sbin/nft -f
+# Managed by BootShield. Host firewall; Docker manages its own DOCKER-USER chain.
+flush ruleset
+
+${cf_include}
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif "lo" accept
+
+        ip protocol icmp accept
+        ip6 nexthdr ipv6-icmp accept
+
+        # SSH
+        ${ssh_rule}
+        # WireGuard
+        ${wg_rule}
+        # Web
+        ${web_rule}
+        # Mail
+        ${mail_rule}
+        # Extra
+${extra_rules}
+    }
+
+    # Leave forward to Docker (it installs its own chains at priority 0).
+    chain forward { type filter hook forward priority 0; policy accept; }
+    chain output  { type filter hook output  priority 0; policy accept; }
+}
+NFTEOF
+
+    # --- Validate, then apply ---
+    if nft -c -f /etc/nftables.conf 2>/tmp/nft-check.err; then
+        run_cmd "systemctl enable nftables"
+        if nft -f /etc/nftables.conf; then
+            log_success "nftables ruleset applied"
+            record_change "Firewall: nftables ruleset applied (ssh=${ssh_access}, web=${web_from})"
+        else
+            log_error "Failed to apply nftables ruleset"
         fi
+    else
+        log_error "nftables ruleset failed validation — NOT applied:"
+        cat /tmp/nft-check.err 2>/dev/null
+        restore_file "/etc/nftables.conf" "nftables.conf"
+    fi
 
-        # Show final status
-        printf "\n${CYAN}Final firewall status:${NC}\n"
-        ufw status verbose
+    # --- Docker integration (container-published web) ---
+    if command -v docker &>/dev/null; then
+        if confirm "Docker detected. Apply DOCKER-USER rules for container web ports?" "y" "DOCKER_INTEGRATION"; then
+            fw_install_docker_user "$web_from"
+        fi
+    fi
+
+    if [[ "$ssh_access" == "anywhere" ]]; then
+        printf "\n${YELLOW}${SYM_WARN} SSH is open to the internet. Test a new session before disconnecting.${NC}\n"
+    else
+        printf "\n${YELLOW}${SYM_WARN} SSH is restricted to the VPN subnet (${wg_subnet}). Keep this session open and verify VPN access.${NC}\n"
     fi
 
     print_module_complete "Firewall"
     MODULE_STATUS["firewall"]="complete"
+
+    pause
+}
+
+# =============================================================================
+# MODULE: VPN (WireGuard)
+# =============================================================================
+
+module_vpn() {
+    print_section "VPN (WIREGUARD)" "$SYM_LOCK" "4"
+    CURRENT_MODULE="VPN"
+
+    if ! confirm "Set up a WireGuard VPN (for VPN-only SSH / admin plane)?" "n" "ENABLE_VPN"; then
+        print_module_skipped "$CURRENT_MODULE"
+        MODULE_STATUS["vpn"]="skipped"
+        return 0
+    fi
+
+    # Install WireGuard
+    if ! command -v wg &>/dev/null; then
+        run_with_spinner "Installing WireGuard" "apt-get update && apt-get install -y wireguard wireguard-tools qrencode"
+    fi
+
+    local wg_dir="/etc/wireguard"
+    mkdir -p "$wg_dir" "$wg_dir/clients"
+    chmod 700 "$wg_dir"
+
+    # Parameters
+    local wg_port wg_subnet wg_server_ip wg_iface="wg0"
+    wg_port=$(ask_input "WireGuard UDP port" "51820" false validate_port "WG_PORT")
+    wg_subnet=$(ask_input "VPN subnet (CIDR)" "10.10.10.0/24" false "" "WG_SUBNET")
+    wg_server_ip=$(ask_input "Server VPN address" "10.10.10.1/24" false "" "WG_SERVER_ADDRESS")
+
+    # Detect public endpoint
+    local pub_ip
+    pub_ip=$(curl -fsSL https://api.ipify.org 2>/dev/null || true)
+    [[ -z "$pub_ip" ]] && pub_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    local endpoint
+    endpoint=$(ask_input "Public endpoint (ip:port clients dial)" "${pub_ip}:${wg_port}" false "" "WG_ENDPOINT")
+
+    # Server keys (create once)
+    if [[ ! -f "$wg_dir/server_private.key" ]]; then
+        (umask 077; wg genkey > "$wg_dir/server_private.key")
+        wg pubkey < "$wg_dir/server_private.key" > "$wg_dir/server_public.key"
+        log_success "Generated server WireGuard keys"
+    fi
+    local server_priv server_pub
+    server_priv=$(cat "$wg_dir/server_private.key")
+    server_pub=$(cat "$wg_dir/server_public.key")
+
+    # Base interface config (create once; peers appended below)
+    if [[ ! -f "$wg_dir/${wg_iface}.conf" ]]; then
+        cat > "$wg_dir/${wg_iface}.conf" <<WGEOF
+[Interface]
+Address = ${wg_server_ip}
+ListenPort = ${wg_port}
+PrivateKey = ${server_priv}
+WGEOF
+        chmod 600 "$wg_dir/${wg_iface}.conf"
+        log_success "Created ${wg_iface}.conf"
+    fi
+
+    # Add a client peer
+    local client_name client_ip allowed
+    client_name=$(ask_input "Client name" "admin" false validate_not_empty "WG_CLIENT_NAME")
+    client_ip=$(ask_input "Client VPN address" "10.10.10.2/32" false "" "WG_CLIENT_ADDRESS")
+    allowed=$(ask_input "Client AllowedIPs (routes through VPN)" "$wg_subnet" false "" "WG_ALLOWED_IPS")
+
+    if grep -q "# client: ${client_name}\$" "$wg_dir/${wg_iface}.conf" 2>/dev/null; then
+        log_warning "A peer named '${client_name}' already exists — skipping peer creation"
+    else
+        local c_priv c_pub
+        c_priv=$(wg genkey)
+        c_pub=$(echo "$c_priv" | wg pubkey)
+
+        cat >> "$wg_dir/${wg_iface}.conf" <<WGEOF
+
+[Peer]
+# client: ${client_name}
+PublicKey = ${c_pub}
+AllowedIPs = ${client_ip}
+WGEOF
+
+        # Client config
+        local client_file="$wg_dir/clients/${client_name}.conf"
+        cat > "$client_file" <<WGEOF
+[Interface]
+PrivateKey = ${c_priv}
+Address = ${client_ip}
+
+[Peer]
+PublicKey = ${server_pub}
+Endpoint = ${endpoint}
+AllowedIPs = ${allowed}
+PersistentKeepalive = 25
+WGEOF
+        chmod 600 "$client_file"
+        log_success "Client config written: ${client_file}"
+    fi
+
+    # Enable forwarding only for full-tunnel clients (AllowedIPs 0.0.0.0/0)
+    if [[ "$allowed" == *"0.0.0.0/0"* ]]; then
+        echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-wireguard.conf
+        sysctl -p /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1 || true
+    fi
+
+    # Bring up / reload
+    run_cmd "systemctl enable wg-quick@${wg_iface}"
+    if systemctl is-active --quiet "wg-quick@${wg_iface}"; then
+        run_cmd "systemctl restart wg-quick@${wg_iface}"
+    else
+        run_cmd "systemctl start wg-quick@${wg_iface}"
+    fi
+    record_change "VPN: WireGuard ${wg_iface} active on ${wg_port}/udp"
+
+    # Show client config + QR (for phones)
+    if [[ -n "${client_file:-}" && -f "${client_file:-}" ]]; then
+        printf "\n${CYAN}Client config (${client_name}):${NC}\n"
+        printf "${GRAY}%s${NC}\n" "$client_file"
+        if command -v qrencode &>/dev/null && [[ "$UNATTENDED" != true ]]; then
+            printf "\n${CYAN}Scan with the WireGuard mobile app:${NC}\n"
+            qrencode -t ansiutf8 < "$client_file"
+        fi
+    fi
+
+    printf "\n${YELLOW}${SYM_WARN} Connect to the VPN and confirm you can reach the server's VPN IP\n"
+    printf "   before enabling vpn-only SSH in the firewall module.${NC}\n"
+
+    print_module_complete "VPN"
+    MODULE_STATUS["vpn"]="complete"
 
     pause
 }
@@ -1399,7 +1714,7 @@ module_fail2ban() {
     print_section "FAIL2BAN CONFIGURATION" "$SYM_LOCK" "5"
     CURRENT_MODULE="Fail2ban"
 
-    if ! confirm "Configure Fail2ban (intrusion prevention)?"; then
+    if ! confirm "Configure Fail2ban (intrusion prevention)?" "n" "FAIL2BAN"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["fail2ban"]="skipped"
         return 0
@@ -1407,7 +1722,7 @@ module_fail2ban() {
 
     # Install fail2ban if needed
     if ! command -v fail2ban-client &>/dev/null; then
-        if confirm "Fail2ban is not installed. Install it?"; then
+        if confirm "Fail2ban is not installed. Install it?" "y" "FAIL2BAN_INSTALL"; then
             run_with_spinner "Installing Fail2ban" "apt-get update && apt-get install -y fail2ban"
         else
             print_module_skipped "$CURRENT_MODULE"
@@ -2148,7 +2463,7 @@ module_kernel() {
     print_section "KERNEL HARDENING" "$SYM_SHIELD" "8"
     CURRENT_MODULE="Kernel Hardening"
 
-    if ! confirm "Apply kernel hardening?"; then
+    if ! confirm "Apply kernel hardening?" "n" "KERNEL_HARDENING"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["kernel"]="skipped"
         return 0
@@ -2162,7 +2477,7 @@ module_kernel() {
     local sysctl_settings=""
 
     # IP Spoofing protection
-    if confirm "Enable IP spoofing protection?"; then
+    if confirm "Enable IP spoofing protection?" "n" "K_IP_SPOOF"; then
         sysctl_settings+="
 # IP Spoofing protection
 net.ipv4.conf.all.rp_filter = 1
@@ -2170,7 +2485,7 @@ net.ipv4.conf.default.rp_filter = 1"
     fi
 
     # ICMP redirects
-    if confirm "Disable ICMP redirects?"; then
+    if confirm "Disable ICMP redirects?" "n" "K_ICMP_REDIRECT"; then
         sysctl_settings+="
 # Disable ICMP redirects
 net.ipv4.conf.all.accept_redirects = 0
@@ -2179,7 +2494,7 @@ net.ipv4.conf.all.send_redirects = 0"
     fi
 
     # Source routing
-    if confirm "Disable source packet routing?"; then
+    if confirm "Disable source packet routing?" "n" "K_SRC_ROUTE"; then
         sysctl_settings+="
 # Disable source routing
 net.ipv4.conf.all.accept_source_route = 0
@@ -2187,7 +2502,7 @@ net.ipv6.conf.all.accept_source_route = 0"
     fi
 
     # SYN flood protection
-    if confirm "Enable SYN flood protection?"; then
+    if confirm "Enable SYN flood protection?" "n" "K_SYN_FLOOD"; then
         sysctl_settings+="
 # SYN flood protection
 net.ipv4.tcp_syncookies = 1
@@ -2197,14 +2512,14 @@ net.ipv4.tcp_max_syn_backlog = 4096"
     fi
 
     # Log martians
-    if confirm "Enable logging of suspicious packets?"; then
+    if confirm "Enable logging of suspicious packets?" "n" "K_LOG_MARTIANS"; then
         sysctl_settings+="
 # Log Martians (suspicious packets)
 net.ipv4.conf.all.log_martians = 1"
     fi
 
     # ICMP broadcasts
-    if confirm "Ignore ICMP broadcasts?"; then
+    if confirm "Ignore ICMP broadcasts?" "n" "K_IGNORE_BCAST"; then
         sysctl_settings+="
 # Ignore ICMP broadcasts
 net.ipv4.icmp_echo_ignore_broadcasts = 1
@@ -2223,7 +2538,7 @@ net.ipv6.conf.lo.disable_ipv6 = 1"
 
     print_subsection "Memory & Limits"
 
-    if confirm "Increase system limits? (file descriptors, ports)"; then
+    if confirm "Increase system limits? (file descriptors, ports)" "n" "K_LIMITS"; then
         sysctl_settings+="
 # Increase file descriptor limit
 fs.file-max = 65535
@@ -2260,7 +2575,7 @@ kernel.randomize_va_space = 2"
     # Secure shared memory
     print_subsection "Shared Memory Security"
 
-    if confirm "Secure shared memory (/run/shm)?"; then
+    if confirm "Secure shared memory (/run/shm)?" "n" "K_SHM"; then
         if ! grep -q "/run/shm" /etc/fstab; then
             echo "tmpfs /run/shm tmpfs defaults,noexec,nosuid 0 0" >> /etc/fstab
             record_change "Secured shared memory"
@@ -2284,7 +2599,7 @@ module_auto_updates() {
     print_section "AUTOMATIC UPDATES" "$SYM_CLOCK" "9"
     CURRENT_MODULE="Automatic Updates"
 
-    if ! confirm "Configure automatic security updates?"; then
+    if ! confirm "Configure automatic security updates?" "n" "AUTO_UPDATES"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["auto_updates"]="skipped"
         return 0
@@ -3131,7 +3446,8 @@ show_main_menu() {
     printf "${CYAN}|${NC}                                                                           ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[2]${NC} ${SYM_USER} User Management                                                ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[3]${NC} ${SYM_KEY} SSH Hardening                                                  ${CYAN}|${NC}\n"
-    printf "${CYAN}|${NC}   ${WHITE}[4]${NC} ${SYM_SHIELD} Firewall (UFW)                                                 ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[4]${NC} ${SYM_SHIELD} Firewall (nftables)                                            ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[17]${NC} ${SYM_LOCK} VPN (WireGuard)                                                 ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[5]${NC} ${SYM_LOCK} Fail2ban                                                       ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[6]${NC} ${SYM_FOLDER} System Cleanup                                                 ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[7]${NC} ${SYM_GEAR} Software Installation                                          ${CYAN}|${NC}\n"
@@ -3156,6 +3472,7 @@ run_quick_setup() {
     module_preflight
     module_user_management
     module_ssh_hardening
+    module_vpn
     module_firewall
     module_fail2ban
     module_cleanup
@@ -3235,10 +3552,24 @@ main() {
                 SKIP_CONFIRMATIONS=true
                 shift
                 ;;
+            --config)
+                CONFIG_FILE="${2:-}"
+                [[ -z "$CONFIG_FILE" ]] && { printf "${RED}--config requires a file path${NC}\n"; exit 1; }
+                UNATTENDED=true
+                SKIP_CONFIRMATIONS=true
+                shift 2
+                ;;
+            --unattended)
+                UNATTENDED=true
+                SKIP_CONFIRMATIONS=true
+                shift
+                ;;
             --help|-h)
                 print_banner
                 printf "Usage: $0 [options]\n\n"
                 printf "Options:\n"
+                printf "  --config FILE   Unattended run driven by a KEY=VALUE config file\n"
+                printf "  --unattended    Unattended run using built-in defaults\n"
                 printf "  --dry-run    Show what would be done without making changes\n"
                 printf "  --yes, -y    Skip confirmations (use defaults)\n"
                 printf "  --help, -h   Show this help message\n"
@@ -3265,6 +3596,16 @@ main() {
     # Trap for cleanup
     trap 'show_cursor; echo; log "Script interrupted"; exit 130' INT TERM
 
+    # Unattended mode: load config and run the full sequence headless
+    if [[ "$UNATTENDED" == true ]]; then
+        [[ -n "$CONFIG_FILE" ]] && load_config "$CONFIG_FILE"
+        log_info "Running in unattended mode${CONFIG_FILE:+ (config: $CONFIG_FILE)}"
+        run_quick_setup
+        printf "\n${GREEN}${SYM_PARTY} Unattended setup complete.${NC}\n"
+        printf "${GRAY}Log saved to: ${LOG_FILE}${NC}\n"
+        exit 0
+    fi
+
     # Main menu loop
     while true; do
         show_main_menu
@@ -3277,6 +3618,7 @@ main() {
             2) module_user_management ;;
             3) module_ssh_hardening ;;
             4) module_firewall ;;
+            17) module_vpn ;;
             5) module_fail2ban ;;
             6) module_cleanup ;;
             7) module_software ;;
