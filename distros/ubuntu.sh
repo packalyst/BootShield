@@ -530,8 +530,10 @@ ask_multiselect() {
 # Pause and wait for enter
 pause() {
     local message="${1:-Press Enter to continue...}"
+    # No prompt in unattended mode, and never block if there's no controlling tty.
+    [[ "$UNATTENDED" == true ]] && return 0
     printf "\n${GRAY}${message}${NC}"
-    read -r </dev/tty
+    read -r </dev/tty 2>/dev/null || true
 }
 
 # =============================================================================
@@ -1789,7 +1791,10 @@ module_fail2ban() {
 bantime = ${ban_seconds}
 findtime = ${find_time}
 maxretry = ${max_retry}
-banaction = ufw
+# nftables is our firewall (not UFW); ban via its own table.
+banaction = nftables-multiport
+# Ubuntu/Debian read sshd auth from the systemd journal, not /var/log/auth.log.
+backend = systemd
 
 # Email notifications (optional)
 #destemail = admin@example.com
@@ -1800,29 +1805,13 @@ banaction = ufw
 [sshd]
 enabled = true
 port = ${ssh_port}
-filter = sshd
-logpath = /var/log/auth.log
+# aggressive mode folds in the old sshd-ddos patterns (connection-reset floods),
+# which exist as a standalone jail no longer in fail2ban >= 0.10.
+mode = aggressive
 maxretry = 3
-
-[sshd-ddos]
-enabled = true
-port = ${ssh_port}
-filter = sshd-ddos
-logpath = /var/log/auth.log
-maxretry = 10
 EOF
 
     log_success "Fail2ban jail.local created"
-
-    # Create sshd-ddos filter if not exists
-    if [[ ! -f /etc/fail2ban/filter.d/sshd-ddos.conf ]]; then
-        cat > /etc/fail2ban/filter.d/sshd-ddos.conf << 'EOF'
-[Definition]
-failregex = ^.*sshd.*: (Connection closed|Connection reset|Did not receive identification string) .* \[preauth\]$
-ignoreregex =
-EOF
-        log_success "sshd-ddos filter created"
-    fi
 
     # Additional jails
     print_subsection "Additional Jails"
@@ -3535,7 +3524,7 @@ module_post_setup() {
     print_subsection "Next Steps"
 
     printf "  ${SYM_BULLET} Test SSH access in a new terminal before disconnecting\n"
-    printf "  ${SYM_BULLET} Review firewall rules: ${CYAN}ufw status verbose${NC}\n"
+    printf "  ${SYM_BULLET} Review firewall rules: ${CYAN}nft list ruleset${NC}\n"
     printf "  ${SYM_BULLET} Run security audit: ${CYAN}lynis audit system${NC}\n"
     printf "  ${SYM_BULLET} Check fail2ban status: ${CYAN}fail2ban-client status${NC}\n"
     printf "  ${SYM_BULLET} Review logs: ${CYAN}cat %s${NC}\n" "$LOG_FILE"

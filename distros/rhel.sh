@@ -544,8 +544,10 @@ ask_multiselect() {
 # Pause and wait for enter
 pause() {
     local message="${1:-Press Enter to continue...}"
+    # No prompt in unattended mode, and never block if there's no controlling tty.
+    [[ "$UNATTENDED" == true ]] && return 0
     printf "\n${GRAY}${message}${NC}"
-    read -r </dev/tty
+    read -r </dev/tty 2>/dev/null || true
 }
 
 # =============================================================================
@@ -1795,8 +1797,10 @@ module_fail2ban() {
 bantime = ${ban_seconds}
 findtime = ${find_time}
 maxretry = ${max_retry}
-banaction = firewallcmd-rich-rules[actiontype=<multiport>]
-banaction_allports = firewallcmd-rich-rules[actiontype=<allports>]
+# nftables is our firewall now (firewalld is disabled); ban via its own table.
+banaction = nftables-multiport
+# RHEL/Rocky/Alma read sshd auth from the systemd journal, not /var/log/secure.
+backend = systemd
 
 # Email notifications (optional)
 #destemail = admin@example.com
@@ -1807,29 +1811,13 @@ banaction_allports = firewallcmd-rich-rules[actiontype=<allports>]
 [sshd]
 enabled = true
 port = ${ssh_port}
-filter = sshd
-logpath = /var/log/secure
+# aggressive mode folds in the old sshd-ddos patterns (connection-reset floods),
+# which exist as a standalone jail no longer in fail2ban >= 0.10.
+mode = aggressive
 maxretry = 3
-
-[sshd-ddos]
-enabled = true
-port = ${ssh_port}
-filter = sshd-ddos
-logpath = /var/log/secure
-maxretry = 10
 EOF
 
     log_success "Fail2ban jail.local created"
-
-    # Create sshd-ddos filter if not exists
-    if [[ ! -f /etc/fail2ban/filter.d/sshd-ddos.conf ]]; then
-        cat > /etc/fail2ban/filter.d/sshd-ddos.conf << 'EOF'
-[Definition]
-failregex = ^.*sshd.*: (Connection closed|Connection reset|Did not receive identification string) .* \[preauth\]$
-ignoreregex =
-EOF
-        log_success "sshd-ddos filter created"
-    fi
 
     # Additional jails
     print_subsection "Additional Jails"
