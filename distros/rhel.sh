@@ -395,7 +395,8 @@ confirm() {
     local key="${3:-}"
 
     if [[ "$UNATTENDED" == true ]]; then
-        local ans="${ANSWERS[$key]:-}"
+        local ans=""
+        [[ -n "$key" ]] && ans="${ANSWERS[$key]:-}"
         if [[ -n "$key" && -n "$ans" ]]; then
             case "${ans,,}" in
                 y|yes|true|1) return 0 ;;
@@ -438,7 +439,8 @@ ask_input() {
     local key="${5:-}"
 
     if [[ "$UNATTENDED" == true ]]; then
-        local ans="${ANSWERS[$key]:-}"
+        local ans=""
+        [[ -n "$key" ]] && ans="${ANSWERS[$key]:-}"
         echo "${ans:-$default}"
         return 0
     fi
@@ -479,7 +481,8 @@ ask_choice() {
     local options=("$@")
 
     if [[ "$UNATTENDED" == true ]]; then
-        local ans="${ANSWERS[${CHOICE_KEY:-}]:-}"
+        local ans=""
+        [[ -n "${CHOICE_KEY:-}" ]] && ans="${ANSWERS[$CHOICE_KEY]:-}"
         CHOICE_KEY=""
         if [[ -n "$ans" ]]; then echo "$ans"; else echo "${options[0]}"; fi
         return 0
@@ -1020,8 +1023,7 @@ module_user_management() {
             fi
 
             local key_choice
-            CHOICE_KEY="SSH_KEY_METHOD"
-            key_choice=$(ask_choice "How would you like to add SSH key?" \
+            key_choice=$(CHOICE_KEY="SSH_KEY_METHOD" ask_choice "How would you like to add SSH key?" \
                 "Paste existing public key" \
                 "Generate new keypair" \
                 "Skip SSH key setup")
@@ -1440,9 +1442,8 @@ module_firewall() {
     ssh_port="${ssh_port:-${CURRENT_SSH_PORT:-22}}"
     ssh_port=$(ask_input "SSH port to allow" "$ssh_port" false validate_port "SSH_PORT")
 
-    CHOICE_KEY="SSH_ACCESS"
     local ssh_access
-    ssh_access=$(ask_choice "SSH reachable from?" "anywhere" "vpn-only")
+    ssh_access=$(CHOICE_KEY="SSH_ACCESS" ask_choice "SSH reachable from?" "anywhere" "vpn-only")
 
     local wg_subnet wg_port enable_vpn="no"
     wg_subnet=$(ask_input "WireGuard subnet (for vpn-only SSH)" "10.10.10.0/24" false "" "WG_SUBNET")
@@ -1456,9 +1457,8 @@ module_firewall() {
         ssh_access="anywhere"
     fi
 
-    CHOICE_KEY="WEB_ALLOW_FROM"
     local web_from
-    web_from=$(ask_choice "HTTP/HTTPS (80,443) reachable from?" "anywhere" "cloudflare" "none")
+    web_from=$(CHOICE_KEY="WEB_ALLOW_FROM" ask_choice "HTTP/HTTPS (80,443) reachable from?" "anywhere" "cloudflare" "none")
 
     local open_mail="no"
     confirm "Open mail ports (25,465,587,993)?" "n" "MAIL_PORTS" && open_mail="yes"
