@@ -948,7 +948,7 @@ module_user_management() {
     print_section "USER MANAGEMENT" "$SYM_USER" "2"
     CURRENT_MODULE="User Management"
 
-    if ! confirm "Configure user management?"; then
+    if ! confirm "Configure user management?" "n" "CONFIGURE_USERS"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["user_management"]="skipped"
         return 0
@@ -967,19 +967,19 @@ module_user_management() {
     fi
 
     # Option to create new user
-    if confirm "Create a new admin user?"; then
+    if confirm "Create a new admin user?" "n" "CREATE_USER"; then
         local new_username
-        new_username=$(ask_input "Enter username for new admin user" "" false validate_username)
+        new_username=$(ask_input "Enter username for new admin user" "" false validate_username "NEW_USERNAME")
 
         if id "$new_username" &>/dev/null; then
             log_warning "User '$new_username' already exists"
-            if confirm "Add existing user '$new_username' to sudo group?"; then
+            if confirm "Add existing user '$new_username' to sudo group?" "y" "ADD_SUDO"; then
                 run_cmd "usermod -aG sudo '$new_username'"
                 record_change "Added user '$new_username' to sudo group"
                 log_success "User '$new_username' added to sudo group"
             fi
         else
-            if confirm "Create user '$new_username' with sudo privileges?"; then
+            if confirm "Create user '$new_username' with sudo privileges?" "y" "CREATE_SUDO_USER"; then
                 run_cmd "adduser --gecos '' '$new_username'"
                 run_cmd "usermod -aG sudo '$new_username'"
                 record_change "Created user '$new_username' with sudo privileges"
@@ -991,14 +991,14 @@ module_user_management() {
     # SSH Key setup
     print_subsection "SSH Key Authentication"
 
-    if confirm "Setup SSH key authentication for a user?"; then
+    if confirm "Setup SSH key authentication for a user?" "n" "SETUP_SSH_KEY"; then
         # Get list of users
         local users_list
         users_list=$(awk -F: '$3 >= 1000 && $3 < 65534 {print $1}' /etc/passwd | tr '\n' ' ')
 
         printf "${CYAN}Available users:${NC} $users_list\n"
         local target_user
-        target_user=$(ask_input "Enter username to configure SSH key for" "$REAL_USER" false validate_not_empty)
+        target_user=$(ask_input "Enter username to configure SSH key for" "$REAL_USER" false validate_not_empty "SSH_KEY_USER")
 
         if ! id "$target_user" &>/dev/null; then
             log_error "User '$target_user' does not exist"
@@ -1016,6 +1016,7 @@ module_user_management() {
             fi
 
             local key_choice
+            CHOICE_KEY="SSH_KEY_METHOD"
             key_choice=$(ask_choice "How would you like to add SSH key?" \
                 "Paste existing public key" \
                 "Generate new keypair" \
@@ -1023,8 +1024,12 @@ module_user_management() {
 
             case "$key_choice" in
                 "Paste existing public key")
-                    printf "${CYAN}Paste your public key (ssh-rsa ... or ssh-ed25519 ...):${NC}\n"
-                    read -r pub_key
+                    if [[ "$UNATTENDED" == true ]]; then
+                        pub_key="${ANSWERS[SSH_PUBKEY]:-}"
+                    else
+                        printf "${CYAN}Paste your public key (ssh-rsa ... or ssh-ed25519 ...):${NC}\n"
+                        read -r pub_key
+                    fi
 
                     if [[ "$pub_key" =~ ^ssh-(rsa|ed25519|ecdsa) ]]; then
                         echo "$pub_key" >> "$auth_keys"
@@ -1088,7 +1093,7 @@ module_user_management() {
     sudo_count=$(grep -Po '^sudo.+:\K.*$' /etc/group 2>/dev/null | tr ',' '\n' | wc -l)
 
     if [[ $sudo_count -gt 0 ]]; then
-        if confirm "Lock root password? (sudo users can still use 'sudo -i')"; then
+        if confirm "Lock root password? (sudo users can still use 'sudo -i')" "n" "LOCK_ROOT"; then
             run_cmd "passwd -l root"
             record_change "Locked root password"
             log_success "Root password locked"
@@ -1111,7 +1116,7 @@ module_ssh_hardening() {
     print_section "SSH HARDENING" "$SYM_KEY" "3"
     CURRENT_MODULE="SSH Hardening"
 
-    if ! confirm "Configure SSH hardening?"; then
+    if ! confirm "Configure SSH hardening?" "n" "SSH_HARDENING"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["ssh_hardening"]="skipped"
         return 0
@@ -1127,9 +1132,9 @@ module_ssh_hardening() {
     print_subsection "SSH Port Configuration"
     printf "${CYAN}Current SSH port:${NC} $CURRENT_SSH_PORT\n"
 
-    if confirm "Change SSH port?"; then
+    if confirm "Change SSH port?" "n" "CHANGE_SSH_PORT"; then
         local new_port
-        new_port=$(ask_input "Enter new SSH port" "2222" false validate_port)
+        new_port=$(ask_input "Enter new SSH port" "2222" false validate_port "SSH_PORT")
 
         if [[ "$new_port" != "$CURRENT_SSH_PORT" ]]; then
             changes_pending+=("Port $new_port")
@@ -1147,7 +1152,7 @@ module_ssh_hardening() {
         printf "  ${SYM_BULLET} Test key login in another terminal first\n"
         printf "\n"
 
-        if confirm "Disable password authentication? (SSH keys only)"; then
+        if confirm "Disable password authentication? (SSH keys only)" "n" "DISABLE_PASSWORD_AUTH"; then
             changes_pending+=("PasswordAuthentication no")
         fi
     else
@@ -1159,7 +1164,7 @@ module_ssh_hardening() {
     printf "${CYAN}Current root login:${NC} $SSH_ROOT_LOGIN\n"
 
     if [[ "$SSH_ROOT_LOGIN" == "enabled" ]]; then
-        if confirm "Disable SSH root login?"; then
+        if confirm "Disable SSH root login?" "n" "DISABLE_ROOT_LOGIN"; then
             changes_pending+=("PermitRootLogin no")
         fi
     else
@@ -1169,7 +1174,7 @@ module_ssh_hardening() {
     # Additional hardening
     print_subsection "Additional SSH Hardening"
 
-    if confirm "Apply additional SSH hardening settings?"; then
+    if confirm "Apply additional SSH hardening settings?" "n" "SSH_EXTRA_HARDENING"; then
         local hardening_options=(
             "MaxAuthTries 3"
             "ClientAliveInterval 300"
@@ -1191,10 +1196,10 @@ module_ssh_hardening() {
     fi
 
     # AllowUsers
-    if confirm "Configure AllowUsers whitelist?"; then
+    if confirm "Configure AllowUsers whitelist?" "n" "SSH_ALLOWUSERS"; then
         printf "${CYAN}Enter usernames allowed to SSH (space-separated):${NC}\n"
         local allowed_users
-        allowed_users=$(ask_input "Users" "$REAL_USER" false validate_not_empty)
+        allowed_users=$(ask_input "Users" "$REAL_USER" false validate_not_empty "SSH_ALLOW_USERS_LIST")
         changes_pending+=("AllowUsers $allowed_users")
     fi
 
@@ -1207,7 +1212,7 @@ module_ssh_hardening() {
         done
         printf "\n"
 
-        if confirm "Apply these SSH changes?"; then
+        if confirm "Apply these SSH changes?" "y" "APPLY_SSH"; then
             # Apply each setting - update in place or add if missing
             for setting in "${changes_pending[@]}"; do
                 local key=$(echo "$setting" | cut -d' ' -f1)
@@ -1251,7 +1256,7 @@ module_ssh_hardening() {
                     fi
                 fi
 
-                if confirm "Reload SSH service now?"; then
+                if confirm "Reload SSH service now?" "y" "RELOAD_SSH"; then
                     reload_ssh
                     record_change "SSH hardening applied"
                     log_success "SSH service reloaded"
@@ -1715,7 +1720,7 @@ module_fail2ban() {
     print_section "FAIL2BAN CONFIGURATION" "$SYM_LOCK" "5"
     CURRENT_MODULE="Fail2ban"
 
-    if ! confirm "Configure Fail2ban (intrusion prevention)?"; then
+    if ! confirm "Configure Fail2ban (intrusion prevention)?" "n" "FAIL2BAN"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["fail2ban"]="skipped"
         return 0
@@ -1723,7 +1728,7 @@ module_fail2ban() {
 
     # Install fail2ban if needed
     if ! command -v fail2ban-client &>/dev/null; then
-        if confirm "Fail2ban is not installed. Install it?"; then
+        if confirm "Fail2ban is not installed. Install it?" "y" "FAIL2BAN_INSTALL"; then
             run_with_spinner "Installing Fail2ban" "apt-get update && apt-get install -y fail2ban"
         else
             print_module_skipped "$CURRENT_MODULE"
@@ -2582,7 +2587,7 @@ module_kernel() {
     print_section "KERNEL HARDENING" "$SYM_SHIELD" "8"
     CURRENT_MODULE="Kernel Hardening"
 
-    if ! confirm "Apply kernel hardening?"; then
+    if ! confirm "Apply kernel hardening?" "n" "KERNEL_HARDENING"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["kernel"]="skipped"
         return 0
@@ -2596,7 +2601,7 @@ module_kernel() {
     local sysctl_settings=""
 
     # IP Spoofing protection
-    if confirm "Enable IP spoofing protection?"; then
+    if confirm "Enable IP spoofing protection?" "n" "K_IP_SPOOF"; then
         sysctl_settings+="
 # IP Spoofing protection
 net.ipv4.conf.all.rp_filter = 1
@@ -2604,7 +2609,7 @@ net.ipv4.conf.default.rp_filter = 1"
     fi
 
     # ICMP redirects
-    if confirm "Disable ICMP redirects?"; then
+    if confirm "Disable ICMP redirects?" "n" "K_ICMP_REDIRECT"; then
         sysctl_settings+="
 # Disable ICMP redirects
 net.ipv4.conf.all.accept_redirects = 0
@@ -2613,7 +2618,7 @@ net.ipv4.conf.all.send_redirects = 0"
     fi
 
     # Source routing
-    if confirm "Disable source packet routing?"; then
+    if confirm "Disable source packet routing?" "n" "K_SRC_ROUTE"; then
         sysctl_settings+="
 # Disable source routing
 net.ipv4.conf.all.accept_source_route = 0
@@ -2621,7 +2626,7 @@ net.ipv6.conf.all.accept_source_route = 0"
     fi
 
     # SYN flood protection
-    if confirm "Enable SYN flood protection?"; then
+    if confirm "Enable SYN flood protection?" "n" "K_SYN_FLOOD"; then
         sysctl_settings+="
 # SYN flood protection
 net.ipv4.tcp_syncookies = 1
@@ -2631,14 +2636,14 @@ net.ipv4.tcp_max_syn_backlog = 4096"
     fi
 
     # Log martians
-    if confirm "Enable logging of suspicious packets?"; then
+    if confirm "Enable logging of suspicious packets?" "n" "K_LOG_MARTIANS"; then
         sysctl_settings+="
 # Log Martians (suspicious packets)
 net.ipv4.conf.all.log_martians = 1"
     fi
 
     # ICMP broadcasts
-    if confirm "Ignore ICMP broadcasts?"; then
+    if confirm "Ignore ICMP broadcasts?" "n" "K_IGNORE_BCAST"; then
         sysctl_settings+="
 # Ignore ICMP broadcasts
 net.ipv4.icmp_echo_ignore_broadcasts = 1
@@ -2657,7 +2662,7 @@ net.ipv6.conf.lo.disable_ipv6 = 1"
 
     print_subsection "Memory & Limits"
 
-    if confirm "Increase system limits? (file descriptors, ports)"; then
+    if confirm "Increase system limits? (file descriptors, ports)" "n" "K_LIMITS"; then
         sysctl_settings+="
 # Increase file descriptor limit
 fs.file-max = 65535
@@ -2694,7 +2699,7 @@ kernel.randomize_va_space = 2"
     # Secure shared memory
     print_subsection "Shared Memory Security"
 
-    if confirm "Secure shared memory (/run/shm)?"; then
+    if confirm "Secure shared memory (/run/shm)?" "n" "K_SHM"; then
         if ! grep -q "/run/shm" /etc/fstab; then
             echo "tmpfs /run/shm tmpfs defaults,noexec,nosuid 0 0" >> /etc/fstab
             record_change "Secured shared memory"
@@ -2718,7 +2723,7 @@ module_auto_updates() {
     print_section "AUTOMATIC UPDATES" "$SYM_CLOCK" "9"
     CURRENT_MODULE="Automatic Updates"
 
-    if ! confirm "Configure automatic security updates?"; then
+    if ! confirm "Configure automatic security updates?" "n" "AUTO_UPDATES"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["auto_updates"]="skipped"
         return 0

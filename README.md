@@ -28,12 +28,15 @@ The bootstrap script automatically detects your distribution and downloads the a
 ## Features
 
 ### Security Hardening
-- SSH hardening with key-only authentication
-- Firewall configuration (UFW/firewalld)
+- SSH hardening with key-only authentication (modern ciphers, forwarding off)
+- **nftables firewall** — default-drop, with optional VPN-only SSH and
+  Cloudflare-only web (auto-refreshed IP set); Docker-aware via `DOCKER-USER`
+- **WireGuard VPN** — admin plane / VPN-only management, split or full tunnel
 - Fail2ban intrusion prevention
 - SELinux configuration (RHEL-based)
 - Kernel hardening via sysctl
 - Automatic security updates
+- **Unattended mode** — drive the whole run from a `KEY=VALUE` config file
 
 ### System Management
 - User management with sudo/wheel access
@@ -56,7 +59,8 @@ The bootstrap script automatically detects your distribution and downloads the a
 | 1 | Pre-flight Checks | System detection and validation |
 | 2 | User Management | Create admin user, configure sudo |
 | 3 | SSH Hardening | Secure SSH configuration |
-| 4 | Firewall | UFW (Debian) / firewalld (RHEL) |
+| 4 | Firewall | nftables: default-drop, VPN/Cloudflare source restrictions, Docker-aware |
+| — | VPN (WireGuard) | Optional VPN; enables VPN-only SSH, split or full tunnel |
 | 5 | Fail2ban | Brute-force protection |
 | 6 | SELinux | Security policy (RHEL only) |
 | 7 | System Cleanup | Remove bloatware and telemetry |
@@ -78,6 +82,26 @@ Select option `[1]` from the main menu to run all modules interactively in seque
 
 ### Individual Modules
 Select specific modules from the main menu to run only what you need.
+
+### Unattended Mode
+Drive the entire run from a config file — no prompts, reproducible across
+servers, and safe to run over SSH (no TTY needed):
+
+```bash
+cp config.example.conf server.conf   # edit answers (user, SSH key, firewall, VPN…)
+sudo ./distros/ubuntu.sh --config server.conf
+```
+
+Every menu answer maps to a `KEY=VALUE` in the file; see `config.example.conf`
+for the full list and defaults. Omitted keys fall back to built-in defaults.
+`--unattended` alone runs with defaults and no config file.
+
+**Firewall model.** The nftables ruleset is default-drop on input. SSH is open
+to all or restricted to the WireGuard subnet (`SSH_ACCESS=vpn-only`, with a
+guard that refuses to lock SSH until `wg0` is up). Web (80/443) is open to all
+or to Cloudflare ranges only (`WEB_ALLOW_FROM=cloudflare`), kept current by a
+weekly `cf-refresh` timer. Docker publishes ports through its own `DOCKER-USER`
+chain, so container-published 80/443 is restricted there in parallel.
 
 ## Directory Structure
 
