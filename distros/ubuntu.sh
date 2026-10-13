@@ -898,7 +898,7 @@ module_preflight() {
     print_status "SSH Port" "$CURRENT_SSH_PORT"
     print_status "SSH Password Auth" "$SSH_PASSWORD_AUTH" $([ "$SSH_PASSWORD_AUTH" == "disabled" ] && echo "success" || echo "warning")
     print_status "SSH Root Login" "$SSH_ROOT_LOGIN" $([ "$SSH_ROOT_LOGIN" == "disabled" ] && echo "success" || echo "warning")
-    print_status "Firewall (UFW)" "$UFW_STATUS" $([ "$UFW_STATUS" == "active" ] && echo "success" || echo "warning")
+    print_status "Firewall (nftables)" "$UFW_STATUS" $([ "$UFW_STATUS" == "active" ] && echo "success" || echo "warning")
 
     if [[ -n "$SUDO_USERS" ]]; then
         print_status "Sudo Users" "$(echo $SUDO_USERS | tr '\n' ', ')"
@@ -1573,6 +1573,136 @@ NFTEOF
 
     print_module_complete "Firewall"
     MODULE_STATUS["firewall"]="complete"
+
+    pause
+}
+
+# =============================================================================
+# MODULE: VPN (WireGuard)
+# =============================================================================
+
+module_vpn() {
+    print_section "VPN (WIREGUARD)" "$SYM_LOCK" "4"
+    CURRENT_MODULE="VPN"
+
+    if ! confirm "Set up a WireGuard VPN (for VPN-only SSH / admin plane)?" "n" "ENABLE_VPN"; then
+        print_module_skipped "$CURRENT_MODULE"
+        MODULE_STATUS["vpn"]="skipped"
+        return 0
+    fi
+
+    # Install WireGuard
+    if ! command -v wg &>/dev/null; then
+        run_with_spinner "Installing WireGuard" "apt-get update && apt-get install -y wireguard wireguard-tools qrencode"
+    fi
+
+    local wg_dir="/etc/wireguard"
+    mkdir -p "$wg_dir" "$wg_dir/clients"
+    chmod 700 "$wg_dir"
+
+    # Parameters
+    local wg_port wg_subnet wg_server_ip wg_iface="wg0"
+    wg_port=$(ask_input "WireGuard UDP port" "51820" false validate_port "WG_PORT")
+    wg_subnet=$(ask_input "VPN subnet (CIDR)" "10.10.10.0/24" false "" "WG_SUBNET")
+    wg_server_ip=$(ask_input "Server VPN address" "10.10.10.1/24" false "" "WG_SERVER_ADDRESS")
+
+    # Detect public endpoint
+    local pub_ip
+    pub_ip=$(curl -fsSL https://api.ipify.org 2>/dev/null || true)
+    [[ -z "$pub_ip" ]] && pub_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    local endpoint
+    endpoint=$(ask_input "Public endpoint (ip:port clients dial)" "${pub_ip}:${wg_port}" false "" "WG_ENDPOINT")
+
+    # Server keys (create once)
+    if [[ ! -f "$wg_dir/server_private.key" ]]; then
+        (umask 077; wg genkey > "$wg_dir/server_private.key")
+        wg pubkey < "$wg_dir/server_private.key" > "$wg_dir/server_public.key"
+        log_success "Generated server WireGuard keys"
+    fi
+    local server_priv server_pub
+    server_priv=$(cat "$wg_dir/server_private.key")
+    server_pub=$(cat "$wg_dir/server_public.key")
+
+    # Base interface config (create once; peers appended below)
+    if [[ ! -f "$wg_dir/${wg_iface}.conf" ]]; then
+        cat > "$wg_dir/${wg_iface}.conf" <<WGEOF
+[Interface]
+Address = ${wg_server_ip}
+ListenPort = ${wg_port}
+PrivateKey = ${server_priv}
+WGEOF
+        chmod 600 "$wg_dir/${wg_iface}.conf"
+        log_success "Created ${wg_iface}.conf"
+    fi
+
+    # Add a client peer
+    local client_name client_ip allowed
+    client_name=$(ask_input "Client name" "admin" false validate_not_empty "WG_CLIENT_NAME")
+    client_ip=$(ask_input "Client VPN address" "10.10.10.2/32" false "" "WG_CLIENT_ADDRESS")
+    allowed=$(ask_input "Client AllowedIPs (routes through VPN)" "$wg_subnet" false "" "WG_ALLOWED_IPS")
+
+    if grep -q "# client: ${client_name}\$" "$wg_dir/${wg_iface}.conf" 2>/dev/null; then
+        log_warning "A peer named '${client_name}' already exists — skipping peer creation"
+    else
+        local c_priv c_pub
+        c_priv=$(wg genkey)
+        c_pub=$(echo "$c_priv" | wg pubkey)
+
+        cat >> "$wg_dir/${wg_iface}.conf" <<WGEOF
+
+[Peer]
+# client: ${client_name}
+PublicKey = ${c_pub}
+AllowedIPs = ${client_ip}
+WGEOF
+
+        # Client config
+        local client_file="$wg_dir/clients/${client_name}.conf"
+        cat > "$client_file" <<WGEOF
+[Interface]
+PrivateKey = ${c_priv}
+Address = ${client_ip}
+
+[Peer]
+PublicKey = ${server_pub}
+Endpoint = ${endpoint}
+AllowedIPs = ${allowed}
+PersistentKeepalive = 25
+WGEOF
+        chmod 600 "$client_file"
+        log_success "Client config written: ${client_file}"
+    fi
+
+    # Enable forwarding only for full-tunnel clients (AllowedIPs 0.0.0.0/0)
+    if [[ "$allowed" == *"0.0.0.0/0"* ]]; then
+        echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-wireguard.conf
+        sysctl -p /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1 || true
+    fi
+
+    # Bring up / reload
+    run_cmd "systemctl enable wg-quick@${wg_iface}"
+    if systemctl is-active --quiet "wg-quick@${wg_iface}"; then
+        run_cmd "systemctl restart wg-quick@${wg_iface}"
+    else
+        run_cmd "systemctl start wg-quick@${wg_iface}"
+    fi
+    record_change "VPN: WireGuard ${wg_iface} active on ${wg_port}/udp"
+
+    # Show client config + QR (for phones)
+    if [[ -n "${client_file:-}" && -f "${client_file:-}" ]]; then
+        printf "\n${CYAN}Client config (${client_name}):${NC}\n"
+        printf "${GRAY}%s${NC}\n" "$client_file"
+        if command -v qrencode &>/dev/null && [[ "$UNATTENDED" != true ]]; then
+            printf "\n${CYAN}Scan with the WireGuard mobile app:${NC}\n"
+            qrencode -t ansiutf8 < "$client_file"
+        fi
+    fi
+
+    printf "\n${YELLOW}${SYM_WARN} Connect to the VPN and confirm you can reach the server's VPN IP\n"
+    printf "   before enabling vpn-only SSH in the firewall module.${NC}\n"
+
+    print_module_complete "VPN"
+    MODULE_STATUS["vpn"]="complete"
 
     pause
 }
@@ -3435,7 +3565,8 @@ show_main_menu() {
     printf "${CYAN}|${NC}                                                                           ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[2]${NC} ${SYM_USER} User Management                                                ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[3]${NC} ${SYM_KEY} SSH Hardening                                                  ${CYAN}|${NC}\n"
-    printf "${CYAN}|${NC}   ${WHITE}[4]${NC} ${SYM_SHIELD} Firewall (UFW)                                                 ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}   ${WHITE}[4]${NC} ${SYM_SHIELD} Firewall (nftables)                                                 ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[17]${NC} ${SYM_LOCK} VPN (WireGuard)                                                 ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[5]${NC} ${SYM_LOCK} Fail2ban                                                       ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[6]${NC} ${SYM_FOLDER} System Cleanup                                                 ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[7]${NC} ${SYM_GEAR} Software Installation                                          ${CYAN}|${NC}\n"
@@ -3460,6 +3591,7 @@ run_quick_setup() {
     module_preflight
     module_user_management
     module_ssh_hardening
+    module_vpn
     module_firewall
     module_fail2ban
     module_cleanup
@@ -3605,6 +3737,7 @@ main() {
             2) module_user_management ;;
             3) module_ssh_hardening ;;
             4) module_firewall ;;
+            17) module_vpn ;;
             5) module_fail2ban ;;
             6) module_cleanup ;;
             7) module_software ;;
