@@ -128,6 +128,12 @@ TOTAL_STEPS=13
 DRY_RUN=false
 SKIP_CONFIRMATIONS=false
 
+# Unattended mode (driven by a --config file; see load_config)
+UNATTENDED=false
+CONFIG_FILE=""
+CHOICE_KEY=""
+declare -A ANSWERS
+
 # =============================================================================
 # UI HELPER FUNCTIONS
 # =============================================================================
@@ -372,6 +378,18 @@ print_status() {
 confirm() {
     local prompt="$1"
     local default="${2:-n}"
+    local key="${3:-}"
+
+    if [[ "$UNATTENDED" == true ]]; then
+        local ans="${ANSWERS[$key]:-}"
+        if [[ -n "$key" && -n "$ans" ]]; then
+            case "${ans,,}" in
+                y|yes|true|1) return 0 ;;
+                *) return 1 ;;
+            esac
+        fi
+        [[ "$default" == "y" ]] && return 0 || return 1
+    fi
 
     if [[ "$SKIP_CONFIRMATIONS" == true ]]; then
         [[ "$default" == "y" ]] && return 0 || return 1
@@ -403,6 +421,13 @@ ask_input() {
     local default="${2:-}"
     local is_secret="${3:-false}"
     local validation="${4:-}"
+    local key="${5:-}"
+
+    if [[ "$UNATTENDED" == true ]]; then
+        local ans="${ANSWERS[$key]:-}"
+        echo "${ans:-$default}"
+        return 0
+    fi
 
     local display_default=""
     if [[ -n "$default" ]] && [[ "$is_secret" != true ]]; then
@@ -438,6 +463,13 @@ ask_choice() {
     local prompt="$1"
     shift
     local options=("$@")
+
+    if [[ "$UNATTENDED" == true ]]; then
+        local ans="${ANSWERS[${CHOICE_KEY:-}]:-}"
+        CHOICE_KEY=""
+        if [[ -n "$ans" ]]; then echo "$ans"; else echo "${options[0]}"; fi
+        return 0
+    fi
 
     printf "${YELLOW}?${NC} ${prompt}\n" >/dev/tty
 
@@ -537,6 +569,36 @@ validate_not_empty() {
     fi
     printf "${RED}  Value cannot be empty${NC}\n" >/dev/tty
     return 1
+}
+
+# =============================================================================
+# CONFIG FILE LOADING (unattended mode)
+# =============================================================================
+
+# Reads KEY=VALUE lines from a config file into the ANSWERS map. Full-line
+# comments (#...) and blank lines are ignored. Internal whitespace in values is
+# preserved (important for SSH public keys); one layer of surrounding quotes is
+# stripped. Example keys live in config.example.conf.
+load_config() {
+    local file="$1"
+    [[ -f "$file" ]] || { printf "${RED}Config file not found: %s${NC}\n" "$file"; exit 1; }
+
+    local line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$line" != *"="* ]] && continue
+
+        key="${line%%=*}"
+        value="${line#*=}"
+        # trim surrounding whitespace (not internal)
+        key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"; value="${value%"${value##*[![:space:]]}"}"
+        # strip one layer of surrounding quotes
+        if [[ "$value" == \"*\" && ${#value} -ge 2 ]]; then value="${value:1:-1}"; fi
+
+        ANSWERS["$key"]="$value"
+    done < "$file"
 }
 
 # =============================================================================
@@ -3353,13 +3415,27 @@ main() {
                 SKIP_CONFIRMATIONS=true
                 shift
                 ;;
+            --config)
+                CONFIG_FILE="${2:-}"
+                [[ -z "$CONFIG_FILE" ]] && { printf "${RED}--config requires a file path${NC}\n"; exit 1; }
+                UNATTENDED=true
+                SKIP_CONFIRMATIONS=true
+                shift 2
+                ;;
+            --unattended)
+                UNATTENDED=true
+                SKIP_CONFIRMATIONS=true
+                shift
+                ;;
             --help|-h)
                 print_banner
                 printf "Usage: $0 [options]\n\n"
                 printf "Options:\n"
-                printf "  --dry-run    Show what would be done without making changes\n"
-                printf "  --yes, -y    Skip confirmations (use defaults)\n"
-                printf "  --help, -h   Show this help message\n"
+                printf "  --config FILE   Unattended run driven by a KEY=VALUE config file\n"
+                printf "  --unattended    Unattended run using built-in defaults\n"
+                printf "  --dry-run       Show what would be done without making changes\n"
+                printf "  --yes, -y       Skip confirmations (use defaults)\n"
+                printf "  --help, -h      Show this help message\n"
                 exit 0
                 ;;
             *)
@@ -3382,6 +3458,16 @@ main() {
 
     # Trap for cleanup
     trap 'show_cursor; echo; log "Script interrupted"; exit 130' INT TERM
+
+    # Unattended mode: load config and run the full sequence headless
+    if [[ "$UNATTENDED" == true ]]; then
+        [[ -n "$CONFIG_FILE" ]] && load_config "$CONFIG_FILE"
+        log_info "Running in unattended mode${CONFIG_FILE:+ (config: $CONFIG_FILE)}"
+        run_quick_setup
+        printf "\n${GREEN}${SYM_PARTY} Unattended setup complete.${NC}\n"
+        printf "${GRAY}Log saved to: ${LOG_FILE}${NC}\n"
+        exit 0
+    fi
 
     # Main menu loop
     while true; do
