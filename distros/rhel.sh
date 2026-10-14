@@ -1619,6 +1619,8 @@ module_vpn() {
     vpn_mode=$(CHOICE_KEY="VPN_MODE" ask_choice "VPN mode?" "wg-server" "wg-client" "tailscale")
     SELECTED_VPN_MODE="$vpn_mode"   # read by the firewall module for vpn-only SSH
 
+    vpn_check_conflicts "$vpn_mode"
+
     case "$vpn_mode" in
         wg-server) vpn_wireguard_server ;;
         wg-client) vpn_wireguard_client ;;
@@ -1642,6 +1644,75 @@ vpn_install_wireguard() {
         run_with_spinner "Installing WireGuard" "dnf install -y wireguard-tools"
         dnf install -y qrencode >/dev/null 2>&1 || log_warning "qrencode unavailable (needs EPEL); skipping QR output"
     fi
+}
+
+# Detect an existing WireGuard/Tailscale setup and, when it conflicts with the
+# chosen mode, let the operator keep, stop, or remove it before continuing.
+vpn_check_conflicts() {
+    local mode="$1"
+    local wg_present=false ts_present=false
+
+    if [[ -f /etc/wireguard/wg0.conf ]] || ip link show wg0 &>/dev/null; then
+        wg_present=true
+    fi
+    if command -v tailscale &>/dev/null \
+        && { ip link show tailscale0 &>/dev/null || tailscale status &>/dev/null || [[ -s /var/lib/tailscale/tailscaled.state ]]; }; then
+        ts_present=true
+    fi
+
+    case "$mode" in
+        wg-server|wg-client)
+            [[ "$ts_present" == true ]] && vpn_resolve_existing tailscale
+            [[ "$wg_present" == true ]] && \
+                log_warning "An existing WireGuard wg0 setup was found (server reuses it; client backs it up and replaces it)."
+            ;;
+        tailscale)
+            [[ "$wg_present" == true ]] && vpn_resolve_existing wireguard
+            [[ "$ts_present" == true ]] && \
+                log_warning "Tailscale is already set up here; re-running 'tailscale up' will re-authenticate this node."
+            ;;
+    esac
+}
+
+# Keep / stop / remove an existing VPN stack ($1 = wireguard | tailscale).
+vpn_resolve_existing() {
+    local stack="$1" action
+    log_warning "${stack} is already present on this host and may conflict with the chosen VPN mode."
+    action=$(CHOICE_KEY="VPN_CONFLICT_ACTION" ask_choice "What should I do with the existing ${stack}?" "keep" "stop" "remove")
+
+    case "${stack}:${action}" in
+        wireguard:stop)
+            run_cmd "systemctl disable --now wg-quick@wg0"
+            log_success "Stopped wg0 (config left in place)"
+            ;;
+        wireguard:remove)
+            run_cmd "systemctl disable --now wg-quick@wg0"
+            if [[ -f /etc/wireguard/wg0.conf ]]; then
+                mv /etc/wireguard/wg0.conf "/etc/wireguard/wg0.conf.bak.$(date +%s)"
+            fi
+            log_success "Stopped wg0 and backed up its config"
+            ;;
+        tailscale:stop)
+            run_cmd "tailscale down"
+            log_success "Brought Tailscale down (still installed and logged in)"
+            ;;
+        tailscale:remove)
+            run_cmd "tailscale down"
+            run_cmd "tailscale logout"
+            run_cmd "systemctl disable --now tailscaled"
+            vpn_remove_package tailscale
+            rm -rf /var/lib/tailscale
+            log_success "Removed Tailscale (down, logged out, package purged, state cleared)"
+            ;;
+        *)
+            log_warning "Leaving the existing ${stack} in place; the two VPNs will coexist."
+            ;;
+    esac
+}
+
+# Remove a package (RHEL family).
+vpn_remove_package() {
+    run_with_spinner "Removing $1" "dnf remove -y $1"
 }
 
 # Enable + (re)start a wg-quick interface. Shared by server and client modes.
@@ -1768,6 +1839,10 @@ vpn_wireguard_client() {
 
     local wg_iface="wg0"
     local conf="$wg_dir/${wg_iface}.conf"
+    if [[ -f "$conf" ]]; then
+        cp -a "$conf" "${conf}.bak.$(date +%s)"
+        log_warning "Backed up existing ${conf}"
+    fi
 
     # Two ways to supply the client config:
     #   file     point at a ready .conf exported from your WireGuard server.
