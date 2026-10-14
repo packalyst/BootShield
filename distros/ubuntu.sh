@@ -1659,7 +1659,10 @@ vpn_check_conflicts() {
     local mode="$1"
     local wg_present=false ts_present=false
 
-    if [[ -f /etc/wireguard/wg0.conf ]] || ip link show wg0 &>/dev/null; then
+    # Any wg config (not just wg0) or any live wireguard interface counts.
+    if compgen -G "/etc/wireguard/*.conf" &>/dev/null \
+        || ip -o link show type wireguard 2>/dev/null | grep -q . \
+        || { command -v wg &>/dev/null && [[ -n "$(wg show interfaces 2>/dev/null)" ]]; }; then
         wg_present=true
     fi
     if command -v tailscale &>/dev/null \
