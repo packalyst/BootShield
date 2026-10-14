@@ -1844,11 +1844,13 @@ vpn_tailscale() {
 
     run_cmd "systemctl enable --now tailscaled"
 
-    local authkey hostname up_args
-    authkey=$(ask_input "Tailscale auth key (blank = interactive login URL)" "" true "" "TS_AUTHKEY")
+    local authkey hostname login_server up_args
+    login_server=$(ask_input "Control server URL (blank = Tailscale SaaS; set yours for Headscale)" "" false "" "TS_LOGIN_SERVER")
+    authkey=$(ask_input "Tailscale auth key (blank = interactive login/register URL)" "" true "" "TS_AUTHKEY")
     hostname=$(ask_input "Tailscale hostname for this node" "$(hostname -s)" false "" "TS_HOSTNAME")
 
     up_args="--hostname=${hostname}"
+    [[ -n "$login_server" ]] && up_args="${up_args} --login-server=${login_server}"
     if confirm "Enable Tailscale SSH on this node?" "y" "TS_SSH"; then
         up_args="${up_args} --ssh"
     fi

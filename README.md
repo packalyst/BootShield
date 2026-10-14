@@ -33,7 +33,8 @@ The bootstrap script automatically detects your distribution and downloads the a
   Cloudflare-only web (auto-refreshed IP set); Docker-aware via `DOCKER-USER`
 - **VPN** — WireGuard *server* (admins dial in), WireGuard *client* (this box
   dials out to a server you run, from a supplied config or a generated keypair),
-  or *Tailscale* (join a tailnet); any mode can back VPN-only SSH
+  or *Tailscale* (join a tailnet — Tailscale SaaS or a self-hosted Headscale via
+  `TS_LOGIN_SERVER`); any mode can back VPN-only SSH
 - Fail2ban intrusion prevention
 - SELinux configuration (RHEL-based)
 - Kernel hardening via sysctl
