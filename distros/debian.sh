@@ -45,6 +45,15 @@ LOG_FILE="${LOG_DIR}/setup-$(date +%Y%m%d-%H%M%S).log"
 STATE_FILE="/var/lib/server-setup-state"
 BACKUP_DIR="/var/backups/server-setup-$(date +%Y%m%d-%H%M%S)"
 
+# Never let apt/debconf block on an interactive prompt (e.g. needrestart's
+# "pending kernel upgrade" / "restart services?" dialogs, which otherwise hang
+# any apt-get install behind the spinner). This script does its own prompting,
+# so apt must run non-interactively for the whole session. NEEDRESTART_MODE=l
+# lists outdated services without restarting them (no surprise sshd restart
+# mid-run) and without asking.
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=l
+
 # Terminal dimensions
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
 TERM_HEIGHT=$(tput lines 2>/dev/null || echo 24)
