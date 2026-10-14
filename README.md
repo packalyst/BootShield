@@ -31,7 +31,9 @@ The bootstrap script automatically detects your distribution and downloads the a
 - SSH hardening with key-only authentication (modern ciphers, forwarding off)
 - **nftables firewall** — default-drop, with optional VPN-only SSH and
   Cloudflare-only web (auto-refreshed IP set); Docker-aware via `DOCKER-USER`
-- **WireGuard VPN** — admin plane / VPN-only management, split or full tunnel
+- **VPN** — WireGuard *server* (admins dial in), WireGuard *client* (this box
+  dials out to a server you run, from a supplied config or a generated keypair),
+  or *Tailscale* (join a tailnet); any mode can back VPN-only SSH
 - Fail2ban intrusion prevention
 - SELinux configuration (RHEL-based)
 - Kernel hardening via sysctl
@@ -60,7 +62,7 @@ The bootstrap script automatically detects your distribution and downloads the a
 | 2 | User Management | Create admin user, configure sudo |
 | 3 | SSH Hardening | Secure SSH configuration |
 | 4 | Firewall | nftables: default-drop, VPN/Cloudflare source restrictions, Docker-aware |
-| — | VPN (WireGuard) | Optional VPN; enables VPN-only SSH, split or full tunnel |
+| — | VPN (WireGuard / Tailscale) | Optional; WG server, WG client, or Tailscale — backs VPN-only SSH |
 | 5 | Fail2ban | Brute-force protection |
 | 6 | SELinux | Security policy (RHEL only) |
 | 7 | System Cleanup | Remove bloatware and telemetry |

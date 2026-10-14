@@ -1448,14 +1448,26 @@ module_firewall() {
     ssh_access=$(CHOICE_KEY="SSH_ACCESS" ask_choice "SSH reachable from?" "anywhere" "vpn-only")
 
     local wg_subnet wg_port enable_vpn="no"
+    local vpn_mode="${SELECTED_VPN_MODE:-wg-server}" vpn_iface="wg0"
     wg_subnet=$(ask_input "WireGuard subnet (for vpn-only SSH)" "10.10.10.0/24" false "" "WG_SUBNET")
     wg_port=$(ask_input "WireGuard UDP port" "51820" false validate_port "WG_PORT")
-    confirm "Open the WireGuard port (${wg_port}/udp)?" "n" "ENABLE_VPN" && enable_vpn="yes"
 
-    # Lockout safety: don't lock SSH to the VPN unless wg0 is actually up.
-    if [[ "$ssh_access" == "vpn-only" ]] && ! ip link show wg0 &>/dev/null; then
-        log_warning "vpn-only SSH requested but wg0 is not up — keeping SSH open to avoid lockout."
-        log_warning "Re-run the firewall module once WireGuard is connected to lock SSH to the VPN."
+    # Tailscale rides tailscale0 on the 100.64.0.0/10 tailnet range, not wg0.
+    if [[ "$vpn_mode" == "tailscale" ]]; then
+        vpn_iface="tailscale0"
+        [[ "$wg_subnet" == "10.10.10.0/24" ]] && wg_subnet="100.64.0.0/10"
+    fi
+
+    # An inbound WireGuard port is only needed when this box is the WG server;
+    # clients and Tailscale dial out, so do not open it for them.
+    if [[ "$vpn_mode" == "wg-server" ]]; then
+        confirm "Open the WireGuard port (${wg_port}/udp)?" "n" "ENABLE_VPN" && enable_vpn="yes"
+    fi
+
+    # Lockout safety: don't lock SSH to the VPN unless its interface is actually up.
+    if [[ "$ssh_access" == "vpn-only" ]] && ! ip link show "$vpn_iface" &>/dev/null; then
+        log_warning "vpn-only SSH requested but ${vpn_iface} is not up — keeping SSH open to avoid lockout."
+        log_warning "Re-run the firewall module once the VPN is connected to lock SSH to it."
         ssh_access="anywhere"
     fi
 
@@ -1586,30 +1598,71 @@ NFTEOF
 }
 
 # =============================================================================
-# MODULE: VPN (WireGuard)
+# MODULE: VPN (WireGuard / Tailscale)
 # =============================================================================
 
 module_vpn() {
-    print_section "VPN (WIREGUARD)" "$SYM_LOCK" "4"
+    print_section "VPN (WIREGUARD / TAILSCALE)" "$SYM_LOCK" "4"
     CURRENT_MODULE="VPN"
 
-    if ! confirm "Set up a WireGuard VPN (for VPN-only SSH / admin plane)?" "n" "ENABLE_VPN"; then
+    if ! confirm "Set up a VPN (admin plane / VPN-only SSH)?" "n" "ENABLE_VPN"; then
         print_module_skipped "$CURRENT_MODULE"
         MODULE_STATUS["vpn"]="skipped"
         return 0
     fi
 
-    # Install WireGuard
+    # Topology:
+    #   wg-server  this box is the WireGuard hub; admins/clients dial in (default).
+    #   wg-client  this box dials OUT to a WireGuard server you already run.
+    #   tailscale  join a tailnet (NAT traversal, no inbound port needed).
+    local vpn_mode
+    vpn_mode=$(CHOICE_KEY="VPN_MODE" ask_choice "VPN mode?" "wg-server" "wg-client" "tailscale")
+    SELECTED_VPN_MODE="$vpn_mode"   # read by the firewall module for vpn-only SSH
+
+    case "$vpn_mode" in
+        wg-server) vpn_wireguard_server ;;
+        wg-client) vpn_wireguard_client ;;
+        tailscale) vpn_tailscale ;;
+        *)
+            log_warning "Unknown VPN mode '${vpn_mode}' - defaulting to wg-server"
+            SELECTED_VPN_MODE="wg-server"
+            vpn_wireguard_server
+            ;;
+    esac
+
+    print_module_complete "VPN"
+    MODULE_STATUS["vpn"]="complete"
+
+    pause
+}
+
+# Install the WireGuard userspace tools (idempotent).
+vpn_install_wireguard() {
     if ! command -v wg &>/dev/null; then
         run_with_spinner "Installing WireGuard" "dnf install -y wireguard-tools"
         dnf install -y qrencode >/dev/null 2>&1 || log_warning "qrencode unavailable (needs EPEL); skipping QR output"
     fi
+}
+
+# Enable + (re)start a wg-quick interface. Shared by server and client modes.
+vpn_wg_bringup() {
+    local iface="$1"
+    run_cmd "systemctl enable wg-quick@${iface}"
+    if systemctl is-active --quiet "wg-quick@${iface}"; then
+        run_cmd "systemctl restart wg-quick@${iface}"
+    else
+        run_cmd "systemctl start wg-quick@${iface}"
+    fi
+}
+
+# --- Mode: this box is the WireGuard SERVER (admins dial in) -----------------
+vpn_wireguard_server() {
+    vpn_install_wireguard
 
     local wg_dir="/etc/wireguard"
     mkdir -p "$wg_dir" "$wg_dir/clients"
     chmod 700 "$wg_dir"
 
-    # Parameters
     local wg_port wg_subnet wg_server_ip wg_iface="wg0"
     wg_port=$(ask_input "WireGuard UDP port" "51820" false validate_port "WG_PORT")
     wg_subnet=$(ask_input "VPN subnet (CIDR)" "10.10.10.0/24" false "" "WG_SUBNET")
@@ -1651,7 +1704,7 @@ WGEOF
     allowed=$(ask_input "Client AllowedIPs (routes through VPN)" "$wg_subnet" false "" "WG_ALLOWED_IPS")
 
     if grep -q "# client: ${client_name}\$" "$wg_dir/${wg_iface}.conf" 2>/dev/null; then
-        log_warning "A peer named '${client_name}' already exists — skipping peer creation"
+        log_warning "A peer named '${client_name}' already exists - skipping peer creation"
     else
         local c_priv c_pub
         c_priv=$(wg genkey)
@@ -1688,14 +1741,8 @@ WGEOF
         sysctl -p /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1 || true
     fi
 
-    # Bring up / reload
-    run_cmd "systemctl enable wg-quick@${wg_iface}"
-    if systemctl is-active --quiet "wg-quick@${wg_iface}"; then
-        run_cmd "systemctl restart wg-quick@${wg_iface}"
-    else
-        run_cmd "systemctl start wg-quick@${wg_iface}"
-    fi
-    record_change "VPN: WireGuard ${wg_iface} active on ${wg_port}/udp"
+    vpn_wg_bringup "$wg_iface"
+    record_change "VPN: WireGuard ${wg_iface} active on ${wg_port}/udp (server)"
 
     # Show client config + QR (for phones)
     if [[ -n "${client_file:-}" && -f "${client_file:-}" ]]; then
@@ -1709,11 +1756,136 @@ WGEOF
 
     printf "\n${YELLOW}${SYM_WARN} Connect to the VPN and confirm you can reach the server's VPN IP\n"
     printf "   before enabling vpn-only SSH in the firewall module.${NC}\n"
+}
 
-    print_module_complete "VPN"
-    MODULE_STATUS["vpn"]="complete"
+# --- Mode: this box is a WireGuard CLIENT (dials out to your server) ---------
+vpn_wireguard_client() {
+    vpn_install_wireguard
 
-    pause
+    local wg_dir="/etc/wireguard"
+    mkdir -p "$wg_dir"
+    chmod 700 "$wg_dir"
+
+    local wg_iface="wg0"
+    local conf="$wg_dir/${wg_iface}.conf"
+
+    # Two ways to supply the client config:
+    #   file     point at a ready .conf exported from your WireGuard server.
+    #   generate we create this box's keypair; you add its public key as a peer.
+    local source
+    source=$(CHOICE_KEY="WG_CLIENT_SOURCE" ask_choice "How do you want to provide the client config?" "file" "generate")
+
+    if [[ "$source" == "file" ]]; then
+        local src
+        src=$(ask_input "Path to the WireGuard client config (.conf)" "" false validate_not_empty "WG_CLIENT_CONF")
+        if [[ ! -f "$src" ]]; then
+            log_error "Config file not found: ${src}"
+            MODULE_STATUS["vpn"]="skipped"
+            return 1
+        fi
+        if ! grep -q '^\[Interface\]' "$src" || ! grep -q '^\[Peer\]' "$src"; then
+            log_error "That file is not a WireGuard config ([Interface]/[Peer] missing)."
+            MODULE_STATUS["vpn"]="skipped"
+            return 1
+        fi
+        install -m 600 "$src" "$conf"
+        log_success "Installed client config -> ${conf}"
+    else
+        # Generate this box's keypair and assemble wg0.conf from supplied server params.
+        if [[ ! -f "$wg_dir/client_private.key" ]]; then
+            (umask 077; wg genkey > "$wg_dir/client_private.key")
+            wg pubkey < "$wg_dir/client_private.key" > "$wg_dir/client_public.key"
+            log_success "Generated this box's WireGuard keys"
+        fi
+        local priv pub
+        priv=$(cat "$wg_dir/client_private.key")
+        pub=$(cat "$wg_dir/client_public.key")
+
+        printf "\n${CYAN}This box's WireGuard public key - add it as a peer on your server:${NC}\n"
+        printf "${WHITE}%s${NC}\n\n" "$pub"
+
+        local addr peer_pub peer_endpoint allowed keepalive
+        addr=$(ask_input "This box's VPN address (CIDR)" "10.10.10.2/32" false validate_not_empty "WG_CLIENT_ADDRESS")
+        peer_pub=$(ask_input "Your server's public key" "" false validate_not_empty "WG_PEER_PUBKEY")
+        peer_endpoint=$(ask_input "Your server's endpoint (host:port)" "" false validate_not_empty "WG_PEER_ENDPOINT")
+        allowed=$(ask_input "AllowedIPs (routes sent through the tunnel)" "10.10.10.0/24" false "" "WG_ALLOWED_IPS")
+        keepalive=$(ask_input "PersistentKeepalive seconds (25 behind NAT)" "25" false "" "WG_KEEPALIVE")
+
+        cat > "$conf" <<WGEOF
+[Interface]
+PrivateKey = ${priv}
+Address = ${addr}
+
+[Peer]
+PublicKey = ${peer_pub}
+Endpoint = ${peer_endpoint}
+AllowedIPs = ${allowed}
+PersistentKeepalive = ${keepalive}
+WGEOF
+        chmod 600 "$conf"
+        log_success "Assembled client config -> ${conf}"
+    fi
+
+    vpn_wg_bringup "$wg_iface"
+    record_change "VPN: WireGuard ${wg_iface} active (client -> remote server)"
+
+    printf "\n${CYAN}Tunnel status:${NC}\n"
+    wg show "$wg_iface" 2>/dev/null || true
+    printf "\n${YELLOW}${SYM_WARN} Confirm you can reach your server's VPN IP before enabling\n"
+    printf "   vpn-only SSH in the firewall module.${NC}\n"
+}
+
+# --- Mode: join a Tailscale tailnet -----------------------------------------
+vpn_tailscale() {
+    if ! command -v tailscale &>/dev/null; then
+        vpn_install_tailscale || { MODULE_STATUS["vpn"]="skipped"; return 1; }
+    fi
+
+    run_cmd "systemctl enable --now tailscaled"
+
+    local authkey hostname up_args
+    authkey=$(ask_input "Tailscale auth key (blank = interactive login URL)" "" true "" "TS_AUTHKEY")
+    hostname=$(ask_input "Tailscale hostname for this node" "$(hostname -s)" false "" "TS_HOSTNAME")
+
+    up_args="--hostname=${hostname}"
+    if confirm "Enable Tailscale SSH on this node?" "y" "TS_SSH"; then
+        up_args="${up_args} --ssh"
+    fi
+    if confirm "Accept subnet routes advertised on the tailnet?" "n" "TS_ACCEPT_ROUTES"; then
+        up_args="${up_args} --accept-routes"
+    fi
+
+    if [[ -n "$authkey" ]]; then
+        run_cmd "tailscale up ${up_args} --authkey=${authkey}"
+    elif [[ "$UNATTENDED" == true ]]; then
+        log_warning "No TS_AUTHKEY in unattended mode - run 'tailscale up ${up_args}' manually to log in."
+    else
+        printf "\n${CYAN}Open the login URL Tailscale prints; this node then joins your tailnet:${NC}\n"
+        tailscale up ${up_args} </dev/tty || log_warning "tailscale up did not complete"
+    fi
+
+    record_change "VPN: Tailscale (tailscale0) - node '${hostname}'"
+
+    local ts_ip
+    ts_ip=$(tailscale ip -4 2>/dev/null | head -n1 || true)
+    [[ -n "$ts_ip" ]] && printf "\n${CYAN}This node's Tailscale IP:${NC} ${WHITE}%s${NC}\n" "$ts_ip"
+
+    printf "\n${YELLOW}${SYM_WARN} Tailscale uses interface 'tailscale0' (100.64.0.0/10). For admin-only\n"
+    printf "   SSH, prefer 'tailscale up --ssh' + tailnet ACLs; the firewall module's vpn-only\n"
+    printf "   option locks SSH to the tailnet range when VPN mode is tailscale.${NC}\n"
+}
+
+# Install Tailscale from the official package repo (RHEL family).
+vpn_install_tailscale() {
+    local ver
+    ver=$(. /etc/os-release 2>/dev/null && echo "${VERSION_ID%%.*}")
+    [[ -z "$ver" ]] && ver=9
+    run_cmd "dnf install -y dnf-plugins-core"
+    if ! run_with_spinner "Adding Tailscale repo" "dnf config-manager --add-repo https://pkgs.tailscale.com/stable/rhel/${ver}/tailscale.repo"; then
+        log_error "Could not add the Tailscale repo for RHEL ${ver}."
+        return 1
+    fi
+    run_with_spinner "Installing Tailscale" "dnf install -y tailscale"
 }
 
 # =============================================================================
@@ -3321,7 +3493,7 @@ show_main_menu() {
     printf "${CYAN}|${NC}   ${WHITE}[2]${NC} ${SYM_USER} User Management                                                ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[3]${NC} ${SYM_KEY} SSH Hardening                                                  ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[4]${NC} ${SYM_SHIELD} Firewall (nftables)                                          ${CYAN}|${NC}\n"
-    printf "${CYAN}|${NC}  ${WHITE}[17]${NC} ${SYM_LOCK} VPN (WireGuard)                                           ${CYAN}|${NC}\n"
+    printf "${CYAN}|${NC}  ${WHITE}[17]${NC} ${SYM_LOCK} VPN (WireGuard / Tailscale)                               ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[5]${NC} ${SYM_LOCK} Fail2ban                                                       ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[6]${NC} ${SYM_SHIELD} SELinux                                                        ${CYAN}|${NC}\n"
     printf "${CYAN}|${NC}   ${WHITE}[7]${NC} ${SYM_FOLDER} System Cleanup                                                 ${CYAN}|${NC}\n"
